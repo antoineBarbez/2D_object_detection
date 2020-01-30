@@ -13,14 +13,15 @@ class InputPipelineCreator(object):
 		self.num_classes = num_classes
 		self.image_shape = image_shape
 		
-	def create_input_pipeline(self, filenames, batch_size, augmentation=False):
+	def create_input_pipeline(self, filenames, batch_size, shuffle=True, augmentation=True):
 		'''
 		Create an optimized input pipeline
 
 		Args:
 			- filenames: List of paths to TFRecord data files.
 			- batch_size: Number of samples per batch.
-			- augmentation: (Optional) Whether to apply data augmentation 
+			- shuffle: (Default: True) Whether to shuffle the dataset before each epoch.
+			- augmentation: (Default: True) Whether to apply data augmentation 
 				(i.e., random transformations) to the images.
 
 		Returns:
@@ -36,7 +37,8 @@ class InputPipelineCreator(object):
 			num_parallel_calls=tf.data.experimental.AUTOTUNE
 		)
 		dataset = dataset.cache()
-		dataset = dataset.shuffle(1024)
+		if shuffle:
+			dataset = dataset.shuffle(1024)
 		dataset = dataset.padded_batch(
 			batch_size=batch_size,
 			drop_remainder=True,

@@ -10,8 +10,8 @@ def draw_bbox_on_image(image, x_min, y_min, x_max, y_max, label=None, color='red
 		- image: A PIL Image object.
 		- x_min, y_min, x_max, y_max: Coordinates of the bounding box.
 		- label: (Optional) Text to add on top of the bounding box.
-		- color: Color of the bounding box, (default: red).
-		- thickness: Thickness of the line of the bounding box, (default: 2px).
+		- color: (Default: red) Color of the bounding box.
+		- thickness: (Default: 2px) Thickness of the line of the bounding box.
 	'''
 	draw = ImageDraw.Draw(image)
 

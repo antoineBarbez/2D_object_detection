@@ -1,7 +1,10 @@
 # Created by https://www.gitignore.io/api/python
 
-*.tfrecords
+*.tfrecord
 *.pyc
+
+
+.DS_Store
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

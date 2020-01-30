@@ -1,3 +1,10 @@
+'''
+Creates TFRecord files from the raw KITTI detection dataset.
+
+The data is split into several .tfrecord files such as each file
+contains 100 examples (i.e., images + labels).
+'''
+
 import tensorflow as tf
 import data.kitti_classes as kitti_classes
 
@@ -29,7 +36,15 @@ def parse_args():
 		'--output-dir',
 		default='./tf_records',
 		type=str,
-		help='Path to output TFRecord files, default= "./tf_records"')
+		help='Path to output TFRecord files, default= "./tf_records". '
+			 'The training files will be located at: <output_dir>/train/ '
+			 'whereas the validation files will be located at: '
+			 '<output-dir>/valid/')
+	parser.add_argument(
+		'--validation-set-size',
+		default=500,
+		type=int,
+		help='Number of images to be used as a validation set, default=500')
 	return parser.parse_args()
 
 def int64_feature(value):
@@ -105,24 +120,38 @@ def parse_label_file(label_file):
 
 		return objects
 
-def main():
-	args = parse_args()
-	if not os.path.exists(args.output_dir):
-		os.makedirs(args.output_dir)
+def write_tf_records(data_files, output_dir):
+	if not os.path.exists(output_dir):
+		os.makedirs(output_dir)
 
-	record_file = os.path.join(args.output_dir, 'record_00.tfrecords')
+	record_file = os.path.join(output_dir, 'record_00.tfrecord')
 	writer = tf.io.TFRecordWriter(record_file)
-	for i, file in enumerate(tf.io.gfile.listdir(args.images_dir)):
-		image_file = os.path.join(args.images_dir, file)
-		label_file = os.path.join(args.labels_dir, file.split('.')[0] + '.txt')
+	for i, (image_file, label_file) in enumerate(data_files):
 		tf_example = create_tf_example(image_file, label_file)
 		writer.write(tf_example.SerializeToString())
 
-		if (i + 1) % 100 == 0:
+		if ((i + 1) % 100 == 0) & ((i + 1) < len(data_files)):
 			writer.close()
-			record_file = os.path.join(args.output_dir, 'record_{:02d}.tfrecords'.format((i+1)//100))
+			record_file = os.path.join(output_dir, 'record_{:02d}.tfrecord'.format((i+1)//100))
 			writer = tf.io.TFRecordWriter(record_file)
 	writer.close()
+
+def main():
+	args = parse_args()
+
+	data_files_train = []
+	data_files_valid = []
+	for i, file in enumerate(tf.io.gfile.listdir(args.images_dir)):
+		image_file = os.path.join(args.images_dir, file)
+		label_file = os.path.join(args.labels_dir, file.split('.')[0] + '.txt')
+
+		if i < args.validation_set_size:
+			data_files_valid.append((image_file, label_file))
+		else:
+			data_files_train.append((image_file, label_file))
+	
+	write_tf_records(data_files_train, os.path.join(args.output_dir, 'train'))
+	write_tf_records(data_files_valid, os.path.join(args.output_dir, 'valid'))
 
 if __name__ == "__main__":
 	main()
