@@ -27,15 +27,15 @@ def parse_args():
 		type=str,
 		help='Path to a directoty containing the TFRecord file(s) for validation')
 	parser.add_argument(
-		'--num_epochs',
+		'--num-epochs',
 		default=3,
 		type=int,
 		help='Number of times to go through the data, default=20')
 	parser.add_argument(
-		'--batch_size',
-		default=10,
+		'--batch-size',
+		default=8,
 		type=int,
-		help='Number of training examples to process at each learning step, default=10')
+		help='Number of training examples to process at each learning step, default=8')
 	return parser.parse_args()
 
 def main():

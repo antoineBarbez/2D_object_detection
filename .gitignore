@@ -3,7 +3,7 @@
 *.tfrecord
 *.pyc
 
-
+commands.txt
 .DS_Store
 
 ### Python ###
