@@ -2,9 +2,9 @@ from PIL import ImageDraw, ImageFont
 
 import math
 
-def draw_bbox_on_image(image, x_min, y_min, x_max, y_max, label=None, color='red', thickness=2):
+def draw_box_on_image(image, x_min, y_min, x_max, y_max, label=None, color='red', thickness=2):
 	'''
-	Draw a bounding box on an image
+	Draw a box on an image
 
 	Args:
 		- image: A PIL Image object.

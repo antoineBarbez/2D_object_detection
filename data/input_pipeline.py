@@ -1,7 +1,7 @@
 import tensorflow as tf
 
 class InputPipelineCreator(object):
-	def __init__(self, num_classes, image_shape):
+	def __init__(self, num_classes, image_shape, max_num_objects=50):
 		'''
 		InputPipelineCreator constructor
 
@@ -12,6 +12,7 @@ class InputPipelineCreator(object):
 		'''
 		self.num_classes = num_classes
 		self.image_shape = image_shape
+		self.max_num_objects = max_num_objects
 		
 	def create_input_pipeline(self, filenames, batch_size, shuffle=True, augmentation=True):
 		'''
@@ -36,17 +37,13 @@ class InputPipelineCreator(object):
 			self._decode_and_preprocess,
 			num_parallel_calls=tf.data.experimental.AUTOTUNE
 		)
+		dataset = dataset.take(12)
 		dataset = dataset.cache()
 		if shuffle:
 			dataset = dataset.shuffle(1024)
-		dataset = dataset.padded_batch(
+		dataset = dataset.batch(
 			batch_size=batch_size,
-			drop_remainder=True,
-			padded_shapes=(
-				self.image_shape,
-				[None, self.num_classes],
-				[None, 4]
-			)
+			drop_remainder=True
 		)
 		if augmentation:
 			dataset = dataset.map(
@@ -106,6 +103,7 @@ class InputPipelineCreator(object):
 		image = self._pad_or_clip(image, self.image_shape)
 
 		classes = tf.one_hot(features['label/ids'].values, self.num_classes)
+		classes = self._pad_or_clip(classes, [self.max_num_objects, self.num_classes])
 		
 		x_mins = features['label/x_mins'].values / tf.cast(self.image_shape[1], tf.float32)
 		y_mins = features['label/y_mins'].values / tf.cast(self.image_shape[0], tf.float32)
@@ -113,6 +111,7 @@ class InputPipelineCreator(object):
 		y_maxs = features['label/y_maxs'].values / tf.cast(self.image_shape[0], tf.float32)
 
 		bboxes = tf.transpose(tf.stack([x_mins, y_mins, x_maxs, y_maxs]))
+		bboxes = self._pad_or_clip(bboxes, [self.max_num_objects, 4])
 
 		return image, classes, bboxes
 
