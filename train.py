@@ -6,6 +6,7 @@ import time
 
 from data.input_pipeline import InputPipelineCreator
 from models.faster_rcnn.rpn import RPN
+from models.faster_rcnn.utils.target_generation import generate_targets
 
 assert tf.__version__.startswith('2')
 
@@ -29,14 +30,9 @@ def parse_args():
 		help='Path to a directoty containing the TFRecord file(s) for validation')
 	parser.add_argument(
 		'--num-epochs',
-		default=3,
+		default=4,
 		type=int,
 		help='Number of times to go through the data, default=20')
-	parser.add_argument(
-		'--batch-size',
-		default=2,
-		type=int,
-		help='Number of training examples to process at each learning step, default=8')
 	return parser.parse_args()
 
 def main():
@@ -45,46 +41,63 @@ def main():
 
 	args = parse_args()
 	filenames_train = [os.path.join(args.train_data_dir, f) for f in tf.io.gfile.listdir(args.train_data_dir)]
-	#filenames_valid = [os.path.join(args.valid_data_dir, f) for f in tf.io.gfile.listdir(args.valid_data_dir)]
+	filenames_valid = [os.path.join(args.valid_data_dir, f) for f in tf.io.gfile.listdir(args.valid_data_dir)]
 
 	pipeline_creator = InputPipelineCreator(num_classes=num_classes, image_shape=image_shape)
-	dataset_train = pipeline_creator.create_input_pipeline(filenames_train, args.batch_size)
-	#dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid, 1, shuffle=False, augmentation=False)
+	dataset_train = pipeline_creator.create_input_pipeline(filenames_train)
+	dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid, shuffle=False, augmentation=False)
 
 	optimizer = tf.keras.optimizers.SGD(learning_rate=0.001, momentum=0.9)
 
 	train_classification_loss = tf.keras.metrics.Mean(name='train_classification_loss')
 	train_regression_loss = tf.keras.metrics.Mean(name='train_regression_loss')
 
+	valid_classification_loss = tf.keras.metrics.Mean(name='valid_classification_loss')
+	valid_regression_loss = tf.keras.metrics.Mean(name='valid_regression_loss')
+
 	model = RPN(image_shape)
 
-	@tf.function
-	def train_step(images, gt_boxes):
-		with tf.GradientTape() as tape:
-			pr_objectness, pr_boxes = model(images, training=True)
-			
-			cls_loss, reg_loss = model.get_losses(gt_boxes, pr_objectness, pr_boxes)
-			multi_task_loss = cls_loss + reg_loss
-
-		gradients = tape.gradient(multi_task_loss, model.trainable_variables)
-		optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-
-		train_classification_loss(cls_loss)
-		train_regression_loss(reg_loss)
-
 	for epoch in tf.data.Dataset.range(args.num_epochs):
-		for images, classes, boxes in dataset_train:
-			train_step(images, boxes)
+		for image, classes, boxes in dataset_train:
+			target_labels, target_boxes = generate_targets(
+				gt_boxes=boxes[0], 
+				anchor_boxes=model.anchors, 
+				image_shape=image_shape,
+				num_anchors_per_image=256)
+			cls_loss, reg_loss = model.train_step(image, target_labels, target_boxes, optimizer)
+
+			train_classification_loss(cls_loss)
+			train_regression_loss(reg_loss)
+
+		for images, classes, boxes in dataset_valid:
+			target_labels, target_boxes = generate_targets(
+				gt_boxes=boxes[0], 
+				anchor_boxes=model.anchors, 
+				image_shape=image_shape,
+				num_anchors_per_image=256)
+			cls_loss, reg_loss = model.test_step(image, target_labels, target_boxes)
+			
+			valid_classification_loss(cls_loss)
+			valid_regression_loss(reg_loss)
 		
 		# Print metrics of the epoch
-		template = 'Classification Loss: {0:.2f}, Regression Loss: {1:.2f}'
+		template = 'Epoch {0}/{1}: \n'
+		template += '\tTraining   Set --> Classification Loss: {2:.2f}, Regression Loss: {3:.2f}\n'
+		template += '\tValidation Set --> Classification Loss: {4:.2f}, Regression Loss: {5:.2f}\n'
+
 		print(template.format(
+			epoch + 1,
+			args.num_epochs,
 			train_classification_loss.result(),
-			train_regression_loss.result()))
+			train_regression_loss.result(),
+			valid_classification_loss.result(),
+			valid_regression_loss.result()))
 
 		# Reset metric objects
 		train_classification_loss.reset_states()
 		train_regression_loss.reset_states()
+		valid_classification_loss.reset_states()
+		valid_regression_loss.reset_states()
 
 if __name__ == "__main__":
 	main()
