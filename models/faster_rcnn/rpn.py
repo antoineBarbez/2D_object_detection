@@ -2,13 +2,14 @@ import tensorflow as tf
 
 from models.faster_rcnn.utils.anchor_generation import generate_anchors
 from models.faster_rcnn.utils.box_encoding import decode
+from models.faster_rcnn.utils.target_generation import generate_targets
 
 class RPN(tf.keras.Model):
 	def __init__(self,
-				 image_shape,
-				 window_size=3,
-				 scales=[0.5, 1.0, 2.0],
-				 aspect_ratios=[0.5, 1.0, 2.0]):
+		image_shape,
+		window_size=3,
+		scales=[0.5, 1.0, 2.0],
+		aspect_ratios=[0.5, 1.0, 2.0]):
 		'''
 		Args:
 			window_size: (Default: 3) Size of the sliding window.
@@ -22,10 +23,6 @@ class RPN(tf.keras.Model):
 			input_shape=image_shape,
 			include_top=False,
 			weights='imagenet')
-
-		'''for layer in self.feature_extractor.layers:
-			if hasattr(layer, 'kernel_regularizer'):
-				layer.kernel_regularizer = regularizer'''
 
 		self.intermediate_layer = tf.keras.layers.Conv2D(
 			filters=256,
@@ -86,7 +83,7 @@ class RPN(tf.keras.Model):
 		reg_output = self.reg_reshape(reg_output)
 		
 		if postprocess:
-			cls_output, reg_output = self._postprocess_output(cls_output, reg_output, training=False)
+			cls_output, reg_output = self._postprocess_output(cls_output, reg_output, training)
 		
 		return cls_output, reg_output
 
@@ -144,7 +141,13 @@ class RPN(tf.keras.Model):
 		return reg_loss
 
 	@tf.function
-	def train_step(self, image, target_labels, target_boxes, optimizer):
+	def train_step(self, image, boxes, optimizer, batch_size=256):
+		target_boxes, target_labels = generate_targets(
+			gt_boxes=boxes[0],
+			anchor_boxes=self.anchors,
+			image_shape=self.image_shape,
+			num_anchors_to_keep=batch_size)
+		
 		with tf.GradientTape() as tape:
 			cls_output, reg_output = self.call(image, postprocess=False, training=True)
 			
@@ -159,8 +162,14 @@ class RPN(tf.keras.Model):
 		return cls_loss, reg_loss
 
 	@tf.function
-	def test_step(self, image, target_labels, target_boxes):
-		cls_output, reg_output = self.call(image, postprocess=False, training=False)
+	def test_step(self, image, boxes, batch_size=256):
+		target_boxes, target_labels = generate_targets(
+			gt_boxes=boxes[0],
+			anchor_boxes=self.anchors,
+			image_shape=self.image_shape,
+			num_anchors_to_keep=batch_size)
+
+		cls_output, reg_output = self.call(image, postprocess=False)
 			
 		cls_loss = self._classification_loss(target_labels, cls_output)
 		reg_loss = self._regression_loss(target_labels, target_boxes, reg_output)

@@ -36,7 +36,7 @@ class InputPipelineCreator(object):
 			self._decode_and_preprocess,
 			num_parallel_calls=tf.data.experimental.AUTOTUNE
 		)
-		dataset = dataset.take(50)
+		dataset = dataset.take(10)
 		dataset = dataset.cache()
 		if shuffle:
 			dataset = dataset.shuffle(1024)

@@ -1,6 +1,7 @@
 import tensorflow as tf
 
 import argparse
+import datetime
 import os
 import time
 
@@ -29,8 +30,13 @@ def parse_args():
 		type=str,
 		help='Path to a directoty containing the TFRecord file(s) for validation')
 	parser.add_argument(
+		'--logs-dir',
+		required=True,
+		type=str,
+		help='Path to the directory where to write training logs')
+	parser.add_argument(
 		'--num-epochs',
-		default=4,
+		default=5,
 		type=int,
 		help='Number of times to go through the data, default=20')
 	return parser.parse_args()
@@ -55,30 +61,34 @@ def main():
 	valid_classification_loss = tf.keras.metrics.Mean(name='valid_classification_loss')
 	valid_regression_loss = tf.keras.metrics.Mean(name='valid_regression_loss')
 
+	current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+	train_log_dir = os.path.join(args.logs_dir, current_time, 'train')
+	valid_log_dir = os.path.join(args.logs_dir, current_time, 'valid')
+	train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+	valid_summary_writer = tf.summary.create_file_writer(valid_log_dir)
+
 	model = RPN(image_shape)
 
 	for epoch in tf.data.Dataset.range(args.num_epochs):
 		for image, classes, boxes in dataset_train:
-			target_labels, target_boxes = generate_targets(
-				gt_boxes=boxes[0], 
-				anchor_boxes=model.anchors, 
-				image_shape=image_shape,
-				num_anchors_per_image=256)
-			cls_loss, reg_loss = model.train_step(image, target_labels, target_boxes, optimizer)
+			cls_loss, reg_loss = model.train_step(image, boxes, optimizer)
 
 			train_classification_loss(cls_loss)
 			train_regression_loss(reg_loss)
+		
+		with train_summary_writer.as_default():
+			tf.summary.scalar('train classification loss', train_classification_loss.result(), step=epoch)
+			tf.summary.scalar('train regression loss', train_regression_loss.result(), step=epoch)
 
 		for images, classes, boxes in dataset_valid:
-			target_labels, target_boxes = generate_targets(
-				gt_boxes=boxes[0], 
-				anchor_boxes=model.anchors, 
-				image_shape=image_shape,
-				num_anchors_per_image=256)
-			cls_loss, reg_loss = model.test_step(image, target_labels, target_boxes)
+			cls_loss, reg_loss = model.test_step(image, boxes)
 			
 			valid_classification_loss(cls_loss)
 			valid_regression_loss(reg_loss)
+		
+		with valid_summary_writer.as_default():
+			tf.summary.scalar('valid classification loss', valid_classification_loss.result(), step=epoch)
+			tf.summary.scalar('valid regression loss', valid_regression_loss.result(), step=epoch)
 		
 		# Print metrics of the epoch
 		template = 'Epoch {0}/{1}: \n'
