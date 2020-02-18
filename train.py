@@ -6,8 +6,7 @@ import os
 import time
 
 from data.input_pipeline import InputPipelineCreator
-from models.faster_rcnn.rpn import RPN
-from models.faster_rcnn.utils.target_generation import generate_targets
+from models.rpn import RPN
 
 assert tf.__version__.startswith('2')
 
@@ -77,8 +76,8 @@ def main():
 			train_regression_loss(reg_loss)
 		
 		with train_summary_writer.as_default():
-			tf.summary.scalar('train classification loss', train_classification_loss.result(), step=epoch)
-			tf.summary.scalar('train regression loss', train_regression_loss.result(), step=epoch)
+			tf.summary.scalar('classification_loss', train_classification_loss.result(), step=epoch)
+			tf.summary.scalar('regression_loss', train_regression_loss.result(), step=epoch)
 
 		for images, classes, boxes in dataset_valid:
 			cls_loss, reg_loss = model.test_step(image, boxes)
@@ -87,8 +86,8 @@ def main():
 			valid_regression_loss(reg_loss)
 		
 		with valid_summary_writer.as_default():
-			tf.summary.scalar('valid classification loss', valid_classification_loss.result(), step=epoch)
-			tf.summary.scalar('valid regression loss', valid_regression_loss.result(), step=epoch)
+			tf.summary.scalar('classification_loss', valid_classification_loss.result(), step=epoch)
+			tf.summary.scalar('regression_loss', valid_regression_loss.result(), step=epoch)
 		
 		# Print metrics of the epoch
 		template = 'Epoch {0}/{1}: \n'

@@ -3,7 +3,7 @@ import numpy as np
 
 import utils.metrics as metrics
 
-from models.faster_rcnn.utils.box_encoding import encode
+from models.utils.box_encoding import encode
 
 def generate_targets(gt_boxes, anchor_boxes, image_shape, num_anchors_to_keep):
 		'''

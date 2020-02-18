@@ -1,29 +1,37 @@
 import tensorflow as tf
 
-from models.faster_rcnn.utils.anchor_generation import generate_anchors
-from models.faster_rcnn.utils.box_encoding import decode
-from models.faster_rcnn.utils.target_generation import generate_targets
+from models.feature_extractor import ResNet50FeatureExtractor
+from models.utils.anchor_generation import generate_anchors
+from models.utils.box_encoding import decode
+from models.utils.target_generation import generate_targets
 
 class RPN(tf.keras.Model):
 	def __init__(self,
 		image_shape,
 		window_size=3,
 		scales=[0.5, 1.0, 2.0],
-		aspect_ratios=[0.5, 1.0, 2.0]):
+		aspect_ratios=[0.5, 1.0, 2.0],
+		base_anchor_shape=(160, 160),
+		name='region_proposal_network',
+		**kwargs):
 		'''
 		Args:
-			window_size: (Default: 3) Size of the sliding window.
+			- image_shape: Shape of the input images.
+			- window_size: (Default: 3) Size of the sliding window.
+			- scales: Anchors' scales.
+			- aspect_ratios: Anchors' aspect ratios.
+			- base_anchor_shape: Shape of the base anchor. 
 		'''
-		super(RPN, self).__init__()
+		super(RPN, self).__init__(name=name, **kwargs)
+
+		self.feature_extractor = ResNet50FeatureExtractor(
+			input_shape=image_shape,
+			include_top=False,
+			weights='imagenet',
+			kernel_regularizer=tf.keras.regularizers.l2(0.00005))
 
 		initializer = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.01)
 		regularizer = tf.keras.regularizers.l2(0.0005)
-
-		self.feature_extractor = tf.keras.applications.ResNet50V2(
-			input_shape=image_shape,
-			include_top=False,
-			weights='imagenet')
-
 		self.intermediate_layer = tf.keras.layers.Conv2D(
 			filters=256,
 			kernel_size=window_size,
@@ -31,7 +39,7 @@ class RPN(tf.keras.Model):
 			activation='relu',
 			kernel_initializer=initializer,
 			kernel_regularizer=regularizer,
-			name='RPN_intermediate_layer')
+			name='rpn_intermediate_layer')
 		
 		num_anchors_per_location = len(scales)*len(aspect_ratios)
 		self.cls_layer = tf.keras.layers.Conv2D(
@@ -41,7 +49,7 @@ class RPN(tf.keras.Model):
 			activation='sigmoid',
 			kernel_initializer=initializer,
 			kernel_regularizer=regularizer,
-			name='RPN_classification_head')
+			name='rpn_classification_head')
 		self.cls_reshape = tf.keras.layers.Flatten(name='RPN_reshape_classification_head')
 		
 		self.reg_layer = tf.keras.layers.Conv2D(
@@ -50,10 +58,10 @@ class RPN(tf.keras.Model):
 			padding='same',
 			kernel_initializer=initializer,
 			kernel_regularizer=regularizer,
-			name='RPN_regression_head')
+			name='rpn_regression_head')
 		self.reg_reshape = tf.keras.layers.Reshape(
 			target_shape=(-1, 4),
-			name='RPN_reshape_regression_head')
+			name='rpn_reshape_regression_head')
 
 		# Losses
 		self.crossentropy = tf.keras.losses.BinaryCrossentropy()
@@ -67,8 +75,8 @@ class RPN(tf.keras.Model):
 			scales=scales,
 			aspect_ratios=aspect_ratios,
 			grid_shape=grid_shape,
-			stride_shape=(32, 32), 
-			base_anchor_shape=(160, 160))
+			stride_shape=(16, 16), 
+			base_anchor_shape=base_anchor_shape)
 		self.image_shape = image_shape
 
 	def call(self, image, postprocess=True, training=False):
@@ -99,8 +107,8 @@ class RPN(tf.keras.Model):
 			- training: A boolean value.
 
 		Returns:
-			rois: A set of regions of interest, i.e., A set of box proposals.
 			roi_scores: A set of objectness scores for the rois.
+			rois: A set of regions of interest, i.e., A set of box proposals.
 		'''
 		boxes = decode(reg_output, self.anchors)
 
@@ -126,16 +134,31 @@ class RPN(tf.keras.Model):
 		return roi_scores, rois
 
 	def _classification_loss(self, target_labels, pred_scores):
+		'''
+		Computes the classification loss for a single image.
+
+		Args:
+			- target_labels: A tensor of shape [num_anchors].
+			- pred_scores: A tensor of shape [num_anchors].
+		'''
 		inds_to_keep = tf.where(target_labels != -1)
-		labels = tf.gather(target_labels, inds_to_keep, name='gather_cls_1')
-		scores = tf.gather(pred_scores[0], inds_to_keep, name='gather_cls_2')
+		labels = tf.gather(target_labels, inds_to_keep)
+		scores = tf.gather(pred_scores, inds_to_keep)
 		
 		return self.crossentropy(labels, scores)
 
 	def _regression_loss(self, target_labels, target_boxes, pred_boxes):
-		reg_loss = self.huber(target_boxes, pred_boxes[0])
+		'''
+		Computes the regression loss for a single image.
+
+		Args:
+			- target_labels: A tensor of shape [num_anchors].
+			- target_boxes: A tensor of shape [num_anchors, 4].
+			- pred_boxes: A tensor of shape [num_anchors, 4].
+		'''
+		reg_loss = self.huber(target_boxes, pred_boxes)
 		reg_loss = tf.reduce_sum(reg_loss, -1)
-		reg_loss = tf.gather(reg_loss, tf.where(target_labels == 1), name='gather_reg')
+		reg_loss = tf.gather(reg_loss, tf.where(target_labels == 1))
 		reg_loss = tf.reduce_mean(reg_loss)
 
 		return reg_loss
@@ -151,10 +174,12 @@ class RPN(tf.keras.Model):
 		with tf.GradientTape() as tape:
 			cls_output, reg_output = self.call(image, postprocess=False, training=True)
 			
-			cls_loss = self._classification_loss(target_labels, cls_output)
-			reg_loss = self._regression_loss(target_labels, target_boxes, reg_output)
+			cls_loss = self._classification_loss(target_labels, tf.squeeze(cls_output, [0]))
+			reg_loss = self._regression_loss(target_labels, target_boxes, tf.squeeze(reg_output, [0]))
 			
 			multi_task_loss = cls_loss + reg_loss + sum(self.losses)
+
+		print(self.trainable_variables)
 
 		gradients = tape.gradient(multi_task_loss, self.trainable_variables)
 		optimizer.apply_gradients(zip(gradients, self.trainable_variables))
@@ -171,7 +196,7 @@ class RPN(tf.keras.Model):
 
 		cls_output, reg_output = self.call(image, postprocess=False)
 			
-		cls_loss = self._classification_loss(target_labels, cls_output)
-		reg_loss = self._regression_loss(target_labels, target_boxes, reg_output)
+		cls_loss = self._classification_loss(target_labels, tf.squeeze(cls_output, [0]))
+		reg_loss = self._regression_loss(target_labels, target_boxes, tf.squeeze(reg_output, [0]))
 
 		return cls_loss, reg_loss
