@@ -1,6 +1,6 @@
 import tensorflow as tf
 
-from models.feature_extractor import ResNet50FeatureExtractor
+from models.feature_extractor import preprocess_input, ResNet50FeatureExtractor
 from models.utils.anchor_generation import generate_anchors
 from models.utils.box_encoding import decode
 from models.utils.target_generation import generate_targets
@@ -25,10 +25,8 @@ class RPN(tf.keras.Model):
 		super(RPN, self).__init__(name=name, **kwargs)
 
 		self.feature_extractor = ResNet50FeatureExtractor(
-			input_shape=image_shape,
-			include_top=False,
-			weights='imagenet',
-			kernel_regularizer=tf.keras.regularizers.l2(0.00005))
+			kernel_regularizer=tf.keras.regularizers.l2(0.00005),
+			input_shape=image_shape)
 
 		initializer = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.01)
 		regularizer = tf.keras.regularizers.l2(0.0005)
@@ -79,31 +77,40 @@ class RPN(tf.keras.Model):
 			base_anchor_shape=base_anchor_shape)
 		self.image_shape = image_shape
 
-	def call(self, image, postprocess=True, training=False):
-		feature_maps = self.feature_extractor(image, training=training)
+	def call(self, image, training=False):
+		'''
+		Forward pass.
+
+		Args:
+			- image: The input image, i.e., a tensor of shape self.image_shape.
+			- training: A boolean indicating whether the training version of the
+				computation graph should be constructed.
+		'''
+		preprocessed_image = preprocess_input(image)
+		preprocessed_image = tf.expand_dims(preprocessed_image, 0)
+		feature_maps = self.feature_extractor(preprocessed_image, training=training)
 		
 		features = self.intermediate_layer(feature_maps)
 		
 		cls_output = self.cls_layer(features)
 		cls_output = self.cls_reshape(cls_output)
+		cls_output = tf.squeeze(cls_output, [0])
 
 		reg_output = self.reg_layer(features)
 		reg_output = self.reg_reshape(reg_output)
-		
-		if postprocess:
-			cls_output, reg_output = self._postprocess_output(cls_output, reg_output, training)
+		reg_output = tf.squeeze(reg_output, [0])
 		
 		return cls_output, reg_output
 
-	def _postprocess_output(self, cls_output, reg_output, training):
+	def postprocess_output(self, cls_output, reg_output, training):
 		'''
 		Postprocess the output of the RPN
 
 		Args:
 			- cls_output: The classification output of the RPN, i.e.,
-				A Tensor of shape [1, num_anchors].
+				A Tensor of shape [num_anchors].
 			- reg_output: The regression output of the RPN, i.e.,
-				A Tensor of shape [1, num_anchors, 4].
+				A Tensor of shape [num_anchors, 4].
 			- training: A boolean value.
 
 		Returns:
@@ -120,16 +127,14 @@ class RPN(tf.keras.Model):
 		boxes = tf.minimum(boxes, image_max_boudaries)
 
 		# Non Max Suppression
-		boxes = tf.squeeze(boxes, [0])
-		scores = tf.squeeze(cls_output, [0])
 		inds_to_keep = tf.image.non_max_suppression(
 		    boxes=boxes,
-		    scores=scores,
+		    scores=cls_output,
 		    max_output_size=2000 if training else 300,
 		    iou_threshold=0.7)
 
 		rois = tf.gather(boxes, inds_to_keep)
-		roi_scores = tf.gather(scores, inds_to_keep)
+		roi_scores = tf.gather(cls_output, inds_to_keep)
 
 		return roi_scores, rois
 
@@ -166,20 +171,18 @@ class RPN(tf.keras.Model):
 	@tf.function
 	def train_step(self, image, boxes, optimizer, batch_size=256):
 		target_boxes, target_labels = generate_targets(
-			gt_boxes=boxes[0],
+			gt_boxes=boxes,
 			anchor_boxes=self.anchors,
 			image_shape=self.image_shape,
 			num_anchors_to_keep=batch_size)
 		
 		with tf.GradientTape() as tape:
-			cls_output, reg_output = self.call(image, postprocess=False, training=True)
+			cls_output, reg_output = self.call(image, training=True)
 			
-			cls_loss = self._classification_loss(target_labels, tf.squeeze(cls_output, [0]))
-			reg_loss = self._regression_loss(target_labels, target_boxes, tf.squeeze(reg_output, [0]))
+			cls_loss = self._classification_loss(target_labels, cls_output)
+			reg_loss = self._regression_loss(target_labels, target_boxes, reg_output)
 			
 			multi_task_loss = cls_loss + reg_loss + sum(self.losses)
-
-		print(self.trainable_variables)
 
 		gradients = tape.gradient(multi_task_loss, self.trainable_variables)
 		optimizer.apply_gradients(zip(gradients, self.trainable_variables))
@@ -189,14 +192,14 @@ class RPN(tf.keras.Model):
 	@tf.function
 	def test_step(self, image, boxes, batch_size=256):
 		target_boxes, target_labels = generate_targets(
-			gt_boxes=boxes[0],
+			gt_boxes=boxes,
 			anchor_boxes=self.anchors,
 			image_shape=self.image_shape,
 			num_anchors_to_keep=batch_size)
 
-		cls_output, reg_output = self.call(image, postprocess=False)
+		cls_output, reg_output = self.call(image)
 			
-		cls_loss = self._classification_loss(target_labels, tf.squeeze(cls_output, [0]))
-		reg_loss = self._regression_loss(target_labels, target_boxes, tf.squeeze(reg_output, [0]))
+		cls_loss = self._classification_loss(target_labels, cls_output)
+		reg_loss = self._regression_loss(target_labels, target_boxes, reg_output)
 
 		return cls_loss, reg_loss

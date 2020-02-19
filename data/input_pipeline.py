@@ -1,28 +1,30 @@
 import tensorflow as tf
 
 class InputPipelineCreator(object):
-	def __init__(self, num_classes, image_shape, max_num_objects=200):
+	def __init__(self, num_classes, image_shape, num_steps_per_epoch=1000, max_num_objects=200):
 		'''
-		InputPipelineCreator constructor
+		InputPipelineCreator constructor.
 
 		Args:
 			- num_classes: Number of classes.
 			- image_shape: Shape of the input images. Images that have a different shape
 				in the data will be clipped and/or padded to the desired shape.
+			- num_steps_per_epoch: Number of images to return in training mode. 
+			- max_num_objects: Maximum number of object to keep per image.
 		'''
 		self.num_classes = num_classes
 		self.image_shape = image_shape
+		self.num_steps_per_epoch = num_steps_per_epoch
 		self.max_num_objects = max_num_objects
 		
-	def create_input_pipeline(self, filenames, shuffle=True, augmentation=True):
+	def create_input_pipeline(self, filenames, training=True):
 		'''
-		Create an optimized input pipeline
+		Create an optimized input pipeline.
 
 		Args:
 			- filenames: List of paths to TFRecord data files.
-			- shuffle: (Default: True) Whether to shuffle the dataset before each epoch.
-			- augmentation: (Default: True) Whether to apply data augmentation 
-				(i.e., random transformations) to the images.
+			- training: (Default: True) Boolean value indicating whether the dataset
+				will be used for training.
 
 		Returns:
 			A tf.data.Dataset object.
@@ -36,12 +38,10 @@ class InputPipelineCreator(object):
 			self._decode_and_preprocess,
 			num_parallel_calls=tf.data.experimental.AUTOTUNE
 		)
-		dataset = dataset.take(10)
 		dataset = dataset.cache()
-		if shuffle:
-			dataset = dataset.shuffle(1024)
-		dataset = dataset.batch(1)
-		if augmentation:
+		if training:
+			dataset = dataset.shuffle(7000)
+			dataset = dataset.take(self.num_steps_per_epoch)
 			dataset = dataset.map(
 				self._augment,
 				num_parallel_calls=tf.data.experimental.AUTOTUNE
@@ -50,22 +50,41 @@ class InputPipelineCreator(object):
 		
 		return dataset
 
-	# TODO
-	def _augment(self, images, classes, bboxes):
+	def _augment(self, image, classes, boxes):
 		'''
-		Apply random transformations to a batch of data
+		Randomly perform an horizontal flip with a probability of 0.5.
 
 		Args:
-			images, classes, bboxes: Batch of images, classes, and bounding boxes.
+			- image: A single image (shape = [height, width, channels]).
+			- classes: The class ids of the objects in the image (one hot encoded).
+			- boxes: The bounding boxes coordinates of the objects in the image.
 
 		Returns:
-			A batch of transformed images, classes, and bounding boxes.
+			Three tensors of same type and shape as image, classes, and boxes.
 		'''
-		return images, classes, bboxes
+
+		def _flip_boxes(boxes):
+			ymin, xmin, ymax, xmax = tf.split(value=boxes, num_or_size_splits=4, axis=-1)
+			flipped_xmin = tf.subtract(1.0, xmax)
+			flipped_xmax = tf.subtract(1.0, xmin)
+			flipped_boxes = tf.concat([ymin, flipped_xmin, ymax, flipped_xmax], -1)
+			return flipped_boxes
+
+		def _flip_image(image):
+			image_flipped = tf.image.flip_left_right(image)
+			return image_flipped
+
+		do_flip = tf.random.uniform([])
+		do_flip = tf.greater(do_flip, 0.5)
+
+		image = tf.cond(do_flip, lambda: _flip_image(image), lambda: image)
+		boxes = tf.cond(do_flip, lambda: _flip_boxes(boxes), lambda: boxes)
+
+		return image, classes, boxes
 
 	def _decode_and_preprocess(self, value):
 		'''
-		Parse and preprocess a single example from a tfrecord
+		Parse and preprocess a single example from a tfrecord.
 
 		Args:
 			- value: The value output of a TFRecordReader() object
@@ -94,7 +113,7 @@ class InputPipelineCreator(object):
 		image_width_original = tf.cast(features['image/width'], tf.int32)
 		image_height_original = tf.cast(features['image/height'], tf.int32)
 
-		image = tf.io.decode_image(features['image/encoded'], dtype=tf.float32) / 255.0
+		image = tf.io.decode_image(features['image/encoded'], dtype=tf.float32)
 		image = tf.reshape(image, [image_height_original, image_width_original, 3])
 		image = self._pad_or_clip(image, self.image_shape)
 

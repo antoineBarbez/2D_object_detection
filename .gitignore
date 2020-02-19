@@ -3,6 +3,7 @@
 *.tfrecord
 *.pyc
 
+checkpoints/
 logs/
 commands.txt
 .DS_Store

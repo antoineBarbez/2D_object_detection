@@ -34,10 +34,20 @@ def parse_args():
 		type=str,
 		help='Path to the directory where to write training logs')
 	parser.add_argument(
+		'--checkpoints-dir',
+		required=True,
+		type=str,
+		help='Path to the directory where to store checkpoint weights')
+	parser.add_argument(
 		'--num-epochs',
-		default=5,
+		default=80,
 		type=int,
-		help='Number of times to go through the data, default=20')
+		help='Number of times to go through the data, default=80')
+	parser.add_argument(
+		'--num-steps-per-epoch',
+		default=1000,
+		type=int,
+		help='number of parameters update per epoch, default=1000')
 	return parser.parse_args()
 
 def main():
@@ -48,11 +58,12 @@ def main():
 	filenames_train = [os.path.join(args.train_data_dir, f) for f in tf.io.gfile.listdir(args.train_data_dir)]
 	filenames_valid = [os.path.join(args.valid_data_dir, f) for f in tf.io.gfile.listdir(args.valid_data_dir)]
 
-	pipeline_creator = InputPipelineCreator(num_classes=num_classes, image_shape=image_shape)
+	pipeline_creator = InputPipelineCreator(
+		num_classes=num_classes,
+		image_shape=image_shape,
+		num_steps_per_epoch=args.num_steps_per_epoch)
 	dataset_train = pipeline_creator.create_input_pipeline(filenames_train)
-	dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid, shuffle=False, augmentation=False)
-
-	optimizer = tf.keras.optimizers.SGD(learning_rate=0.001, momentum=0.9)
+	dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid, training=False)
 
 	train_classification_loss = tf.keras.metrics.Mean(name='train_classification_loss')
 	train_regression_loss = tf.keras.metrics.Mean(name='train_regression_loss')
@@ -61,13 +72,16 @@ def main():
 	valid_regression_loss = tf.keras.metrics.Mean(name='valid_regression_loss')
 
 	current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-	train_log_dir = os.path.join(args.logs_dir, current_time, 'train')
-	valid_log_dir = os.path.join(args.logs_dir, current_time, 'valid')
+	train_log_dir = os.path.join(args.logs_dir, current_time, 'rpn', 'train')
+	valid_log_dir = os.path.join(args.logs_dir, current_time, 'rpn', 'valid')
 	train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 	valid_summary_writer = tf.summary.create_file_writer(valid_log_dir)
 
-	model = RPN(image_shape)
+	learning_rate = tf.keras.optimizers.schedules.PiecewiseConstantDecay([50000], [0.001, 0.0001])
+	optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9)
 
+	model = RPN(image_shape)
+	
 	for epoch in tf.data.Dataset.range(args.num_epochs):
 		for image, classes, boxes in dataset_train:
 			cls_loss, reg_loss = model.train_step(image, boxes, optimizer)
@@ -79,7 +93,7 @@ def main():
 			tf.summary.scalar('classification_loss', train_classification_loss.result(), step=epoch)
 			tf.summary.scalar('regression_loss', train_regression_loss.result(), step=epoch)
 
-		for images, classes, boxes in dataset_valid:
+		for image, classes, boxes in dataset_valid:
 			cls_loss, reg_loss = model.test_step(image, boxes)
 			
 			valid_classification_loss(cls_loss)
@@ -89,6 +103,10 @@ def main():
 			tf.summary.scalar('classification_loss', valid_classification_loss.result(), step=epoch)
 			tf.summary.scalar('regression_loss', valid_regression_loss.result(), step=epoch)
 		
+		# Save model checkpoint
+		if (epoch + 1) % 10 == 0:
+			model.save_weights(os.path.join(args.checkpoints_dir, 'checkpoint_{}'.format(epoch + 1),'weights'), save_format='tf')
+
 		# Print metrics of the epoch
 		template = 'Epoch {0}/{1}: \n'
 		template += '\tTraining   Set --> Classification Loss: {2:.2f}, Regression Loss: {3:.2f}\n'

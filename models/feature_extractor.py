@@ -1,4 +1,4 @@
-import tensorflow as tf 
+import tensorflow as tf
 
 class _LayersOverride(object):
 	def __init__(self, kernel_regularizer, bias_regularizer):
@@ -19,6 +19,8 @@ class _LayersOverride(object):
 	def __getattr__(self, item):
 		return getattr(tf.keras.layers, item)
 
+def preprocess_input(image):
+	return tf.keras.applications.imagenet_utils.preprocess_input(image, mode='tf')
 
 def ResNet50FeatureExtractor(
 		kernel_regularizer=None,
@@ -46,5 +48,9 @@ def ResNet50FeatureExtractor(
 		kernel_regularizer=kernel_regularizer,
 		bias_regularizer=bias_regularizer)
 
-	return tf.keras.applications.ResNet50(layers=layers_override, **kwargs)
+	return tf.keras.applications.ResNet50(
+		layers=layers_override,
+		include_top=False,
+		weights='imagenet',
+		**kwargs)
 

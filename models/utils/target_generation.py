@@ -9,8 +9,9 @@ def generate_targets(gt_boxes, anchor_boxes, image_shape, num_anchors_to_keep):
 		'''
 		Args:
 			- gt_boxes: Tensor of shape [num_objects, 4] representing 
-				the normalized groudtruth bounding boxes coordinates.
-			- anchor_boxes: Tensor of shape [num_anchors, 4].
+				the groudtruth bounding boxes in relative coordinates.
+			- anchor_boxes: Tensor of shape [num_anchors, 4] representing the anchor
+				boxes in absolute coordinates.
 			- image_shape: Shape of the input image.
 			- num_anchors_to_keep: Number of anchors labeled as positive of negative per image.
 
