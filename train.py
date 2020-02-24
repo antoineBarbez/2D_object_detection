@@ -84,7 +84,8 @@ def main():
 	
 	for epoch in tf.data.Dataset.range(args.num_epochs):
 		for image, classes, boxes in dataset_train:
-			cls_loss, reg_loss = model.train_step(image, boxes, optimizer)
+			objectness = tf.one_hot(tf.ones(200, dtype=tf.int32), 2)
+			cls_loss, reg_loss = model.train_step(image, objectness, boxes, optimizer)
 
 			train_classification_loss(cls_loss)
 			train_regression_loss(reg_loss)
@@ -94,7 +95,8 @@ def main():
 			tf.summary.scalar('regression_loss', train_regression_loss.result(), step=epoch)
 
 		for image, classes, boxes in dataset_valid:
-			cls_loss, reg_loss = model.test_step(image, boxes)
+			objectness = tf.one_hot(tf.ones(200, dtype=tf.int32), 2)
+			cls_loss, reg_loss = model.test_step(image, objectness, boxes)
 			
 			valid_classification_loss(cls_loss)
 			valid_regression_loss(reg_loss)

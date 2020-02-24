@@ -117,8 +117,8 @@ class InputPipelineCreator(object):
 		image = tf.reshape(image, [image_height_original, image_width_original, 3])
 		image = self._pad_or_clip(image, self.image_shape)
 
-		classes = tf.one_hot(features['label/ids'].values, self.num_classes)
-		classes = self._pad_or_clip(classes, [self.max_num_objects, self.num_classes])
+		classes = tf.one_hot(features['label/ids'].values + 1, self.num_classes + 1)
+		classes = self._pad_or_clip(classes, [self.max_num_objects, self.num_classes + 1])
 		
 		x_mins = features['label/x_mins'].values / tf.cast(self.image_shape[1], tf.float32)
 		y_mins = features['label/y_mins'].values / tf.cast(self.image_shape[0], tf.float32)

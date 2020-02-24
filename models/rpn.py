@@ -1,32 +1,35 @@
 import tensorflow as tf
+import models.utils.boxes as box_utils
+import models.utils.anchors as anchor_utils
 
-from models.feature_extractor import preprocess_input, ResNet50FeatureExtractor
-from models.utils.anchor_generation import generate_anchors
-from models.utils.box_encoding import decode
-from models.utils.target_generation import generate_targets
+from models.object_detection_model import ObjectDetectionModel
 
-class RPN(tf.keras.Model):
+class RPN(ObjectDetectionModel):
 	def __init__(self,
 		image_shape,
 		window_size=3,
 		scales=[0.5, 1.0, 2.0],
 		aspect_ratios=[0.5, 1.0, 2.0],
 		base_anchor_shape=(160, 160),
-		name='region_proposal_network',
-		**kwargs):
+		name='region_proposal_network'):
 		'''
+		Instantiate a Region Proposal Network.
+
 		Args:
 			- image_shape: Shape of the input images.
+			- num_classes: Number of classes without background.
 			- window_size: (Default: 3) Size of the sliding window.
 			- scales: Anchors' scales.
 			- aspect_ratios: Anchors' aspect ratios.
 			- base_anchor_shape: Shape of the base anchor. 
 		'''
-		super(RPN, self).__init__(name=name, **kwargs)
-
-		self.feature_extractor = ResNet50FeatureExtractor(
-			kernel_regularizer=tf.keras.regularizers.l2(0.00005),
-			input_shape=image_shape)
+		super(RPN, self).__init__(
+			image_shape=image_shape,
+			num_classes=1,
+			foreground_proportion=0.5,
+			foreground_iou_interval=(0.7, 1.0), 
+			background_iou_interval=(0.0, 0.3),
+			name=name)
 
 		initializer = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.01)
 		regularizer = tf.keras.regularizers.l2(0.0005)
@@ -41,14 +44,18 @@ class RPN(tf.keras.Model):
 		
 		num_anchors_per_location = len(scales)*len(aspect_ratios)
 		self.cls_layer = tf.keras.layers.Conv2D(
-			filters=num_anchors_per_location, 
+			filters=2*num_anchors_per_location, 
 			kernel_size=1,
 			padding='same',
-			activation='sigmoid',
 			kernel_initializer=initializer,
 			kernel_regularizer=regularizer,
 			name='rpn_classification_head')
-		self.cls_reshape = tf.keras.layers.Flatten(name='RPN_reshape_classification_head')
+		self.cls_reshape = tf.keras.layers.Reshape(
+			target_shape=(-1, 2),
+			name='rpn_classification_head_reshape')
+		self.cls_activation = tf.keras.layers.Activation(
+			activation='softmax',
+			name='rpn_classification_head_activation')
 		
 		self.reg_layer = tf.keras.layers.Conv2D(
 			filters=4*num_anchors_per_location,
@@ -58,18 +65,12 @@ class RPN(tf.keras.Model):
 			kernel_regularizer=regularizer,
 			name='rpn_regression_head')
 		self.reg_reshape = tf.keras.layers.Reshape(
-			target_shape=(-1, 4),
-			name='rpn_reshape_regression_head')
-
-		# Losses
-		self.crossentropy = tf.keras.losses.BinaryCrossentropy()
-		self.huber = tf.keras.losses.Huber(
-			delta=1.0,
-			reduction=tf.keras.losses.Reduction.NONE)
+			target_shape=(-1, 1, 4),
+			name='rpn_regression_head_reshape')
 
 		_, grid_height, grid_width, _ = self.feature_extractor.output_shape
 		grid_shape = (grid_height, grid_width)
-		self.anchors = generate_anchors(
+		self.anchors = anchor_utils.generate_anchors(
 			scales=scales,
 			aspect_ratios=aspect_ratios,
 			grid_shape=grid_shape,
@@ -77,54 +78,26 @@ class RPN(tf.keras.Model):
 			base_anchor_shape=base_anchor_shape)
 		self.image_shape = image_shape
 
-	def call(self, image, training=False):
-		'''
-		Forward pass.
-
-		Args:
-			- image: The input image, i.e., a tensor of shape self.image_shape.
-			- training: A boolean indicating whether the training version of the
-				computation graph should be constructed.
-		'''
-		preprocessed_image = preprocess_input(image)
-		preprocessed_image = tf.expand_dims(preprocessed_image, 0)
-		feature_maps = self.feature_extractor(preprocessed_image, training=training)
-		
-		features = self.intermediate_layer(feature_maps)
-		
-		cls_output = self.cls_layer(features)
-		cls_output = self.cls_reshape(cls_output)
-		cls_output = tf.squeeze(cls_output, [0])
-
-		reg_output = self.reg_layer(features)
-		reg_output = self.reg_reshape(reg_output)
-		reg_output = tf.squeeze(reg_output, [0])
-		
-		return cls_output, reg_output
-
-	def postprocess_output(self, cls_output, reg_output, training):
+	def postprocess_output(self, anchors, cls_output, reg_output, training):
 		'''
 		Postprocess the output of the RPN
 
 		Args:
-			- cls_output: The classification output of the RPN, i.e.,
-				A Tensor of shape [num_anchors].
-			- reg_output: The regression output of the RPN, i.e.,
-				A Tensor of shape [num_anchors, 4].
+			- cls_output: Output of the classification head. A tensor of shape 
+				[num_anchors, 2] representing classification scores for each anchor.
+			- reg_output: Output of the regression head. A tensor of shape [num_anchors, num_class=1, 4]
+				representing encoded predicted box coordinates for each anchor.
 			- training: A boolean value.
 
 		Returns:
 			roi_scores: A set of objectness scores for the rois.
 			rois: A set of regions of interest, i.e., A set of box proposals.
 		'''
-		boxes = decode(reg_output, self.anchors)
+		boxes = box_utils.decode(reg_output, anchors)
 
 		# Clip boxes to image boundaries
 		image_height, image_width, _ = self.image_shape
-		image_max_boudaries = tf.constant([image_width, image_height, image_width, image_height], dtype=tf.float32)
-
-		boxes = tf.maximum(boxes, 0.)
-		boxes = tf.minimum(boxes, image_max_boudaries)
+		boxes = box_utils.clip_to_window(boxes, [0, 0, image_width, image_height])
 
 		# Non Max Suppression
 		inds_to_keep = tf.image.non_max_suppression(
@@ -138,68 +111,64 @@ class RPN(tf.keras.Model):
 
 		return roi_scores, rois
 
-	def _classification_loss(self, target_labels, pred_scores):
+	def _predict(self, feature_maps, training):
 		'''
-		Computes the classification loss for a single image.
+		Args:
+			- feature_maps: Output of the feature extractor.
+			- training: A boolean indicating whether the training version of the
+				computation graph should be constructed.
+
+		Returns:
+			- anchors: Anchor boxes to be used for postprocessing, shape = [num_anchors, 4].
+			- cls_output: Output of the classification head. A tensor of shape 
+				[num_anchors, 2] representing classification scores for each anchor.
+			- reg_output: Output of the regression head. A tensor of shape [num_anchors, num_class=1, 4]
+				representing encoded predicted box coordinates for each anchor.
+		'''
+		features = self.intermediate_layer(feature_maps)
+		
+		cls_output = self.cls_layer(features)
+		cls_output = self.cls_reshape(cls_output)
+		cls_output = self.cls_activation(cls_output)
+		cls_output = tf.squeeze(cls_output, [0])
+
+		reg_output = self.reg_layer(features)
+		reg_output = self.reg_reshape(reg_output)
+		reg_output = tf.squeeze(reg_output, [0])
+
+		if training:
+			anchors, cls_output, reg_output = self._remove_invalid_anchors_and_predictions(cls_output, reg_output)
+		else:
+			image_height, image_width, _ = self.image_shape
+			anchors = box_utils.clip_to_window(self.anchors, [0, 0, image_width, image_height])
+			
+		return anchors, cls_output, reg_output
+
+	def _remove_invalid_anchors_and_predictions(self, cls_output, reg_output):
+		'''
+		Remove anchors that overlap with the image boundaries, as well as 
+		the corresponding predictions.
 
 		Args:
-			- target_labels: A tensor of shape [num_anchors].
-			- pred_scores: A tensor of shape [num_anchors].
-		'''
-		inds_to_keep = tf.where(target_labels != -1)
-		labels = tf.gather(target_labels, inds_to_keep)
-		scores = tf.gather(pred_scores, inds_to_keep)
+			- cls_output: Output of the classification head. A tensor of shape 
+				[num_anchors, 2] representing classification scores for each anchor.
+			- reg_output: Output of the regression head. A tensor of shape [num_anchors, num_class=1, 4]
+				representing encoded predicted box coordinates for each anchor.
 		
-		return self.crossentropy(labels, scores)
-
-	def _regression_loss(self, target_labels, target_boxes, pred_boxes):
+		Returns:
+			filtered anchors, cls_output, and reg_output.
 		'''
-		Computes the regression loss for a single image.
+		image_height, image_width, _ = self.image_shape
+		inds_to_keep = tf.reshape(
+			tf.where(
+				(self.anchors[:, 0] >= 0) &
+				(self.anchors[:, 1] >= 0) &
+				(self.anchors[:, 2] <= image_width) &
+				(self.anchors[:, 3] <= image_height)),
+			[-1])
 
-		Args:
-			- target_labels: A tensor of shape [num_anchors].
-			- target_boxes: A tensor of shape [num_anchors, 4].
-			- pred_boxes: A tensor of shape [num_anchors, 4].
-		'''
-		reg_loss = self.huber(target_boxes, pred_boxes)
-		reg_loss = tf.reduce_sum(reg_loss, -1)
-		reg_loss = tf.gather(reg_loss, tf.where(target_labels == 1))
-		reg_loss = tf.reduce_mean(reg_loss)
+		filtered_anchors = tf.gather(self.anchors, inds_to_keep)
+		filtered_cls_output = tf.gather(cls_output, inds_to_keep)
+		filtered_reg_output = tf.gather(reg_output, inds_to_keep)
 
-		return reg_loss
-
-	@tf.function
-	def train_step(self, image, boxes, optimizer, batch_size=256):
-		target_boxes, target_labels = generate_targets(
-			gt_boxes=boxes,
-			anchor_boxes=self.anchors,
-			image_shape=self.image_shape,
-			num_anchors_to_keep=batch_size)
-		
-		with tf.GradientTape() as tape:
-			cls_output, reg_output = self.call(image, training=True)
-			
-			cls_loss = self._classification_loss(target_labels, cls_output)
-			reg_loss = self._regression_loss(target_labels, target_boxes, reg_output)
-			
-			multi_task_loss = cls_loss + reg_loss + sum(self.losses)
-
-		gradients = tape.gradient(multi_task_loss, self.trainable_variables)
-		optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-
-		return cls_loss, reg_loss
-
-	@tf.function
-	def test_step(self, image, boxes, batch_size=256):
-		target_boxes, target_labels = generate_targets(
-			gt_boxes=boxes,
-			anchor_boxes=self.anchors,
-			image_shape=self.image_shape,
-			num_anchors_to_keep=batch_size)
-
-		cls_output, reg_output = self.call(image)
-			
-		cls_loss = self._classification_loss(target_labels, cls_output)
-		reg_loss = self._regression_loss(target_labels, target_boxes, reg_output)
-
-		return cls_loss, reg_loss
+		return filtered_anchors, filtered_cls_output, filtered_reg_output
