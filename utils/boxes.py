@@ -25,18 +25,14 @@ def decode(boxes, reference_boxes):
 	Args:
 		- boxes: A tensor of shape [d1, ..., dN, num_boxes, 4] representing box
 			coordinates encoded as: [x_min, y_min, x_max, y_max].
-		- reference_boxes: A tensor representing the reference box coordinates.
-
-	Note: This operation supports broadcasting.
+		- reference_boxes: A tensor with same type and shape as boxes
+			representing the reference box coordinates.
 
 	Returns:
 		A tensor of same shape as boxes.
 	'''
-
-	#ref_boxes = tf.broadcast_to(reference_boxes, boxes.shape) 
-	ref_boxes = tf.expand_dims(reference_boxes, 0)
-	ref_boxes = tf.tile(ref_boxes, [tf.shape(boxes)[0], 1])
-	mins_ref, maxs_ref = tf.split(ref_boxes, num_or_size_splits=2, axis=-1)
+	
+	mins_ref, maxs_ref = tf.split(reference_boxes, num_or_size_splits=2, axis=-1)
 	centers_ref = (maxs_ref + mins_ref) / 2.0
 	sizes_ref = maxs_ref - mins_ref
 
@@ -51,9 +47,8 @@ def encode(boxes, reference_boxes):
 	Args:
 		- boxes: A tensor of shape [d1, ..., dN, num_boxes, 4] representing box
 			coordinates encoded as: [x_min, y_min, x_max, y_max].
-		- reference_boxes: A tensor representing the reference box coordinates.
-
-	Note: This operation supports broadcasting.
+		- reference_boxes: A tensor with same type and shape as boxes
+			representing the reference box coordinates.
 
 	Returns:
 		A tensor of same shape as boxes, encoding the boxes as
@@ -66,11 +61,7 @@ def encode(boxes, reference_boxes):
 		With [xr, yr, wr, hr] the coordinates of the associated reference box.
 	'''
 
-	#ref_boxes = tf.broadcast_to(reference_boxes, boxes.shape) 
-	#ref_boxes = tf.expand_dims(reference_boxes, 0)
-	#ref_boxes = tf.tile(ref_boxes, [tf.shape(boxes)[0], 1]) 
-	ref_boxes = reference_boxes
-	mins_ref, maxs_ref = tf.split(ref_boxes, num_or_size_splits=2, axis=-1)
+	mins_ref, maxs_ref = tf.split(reference_boxes, num_or_size_splits=2, axis=-1)
 	centers_ref = (maxs_ref + mins_ref) / 2.0
 	sizes_ref = maxs_ref - mins_ref
 
@@ -83,4 +74,20 @@ def encode(boxes, reference_boxes):
 
 	return tf.concat([centers, sizes], axis=-1)
 
+def to_absolute(boxes, image_shape):
+	'''
+	Rescale boxes to be in absolute coordinates.
+	'''
+	image_height, image_width, _ = image_shape
+	abs_boxes = tf.multiply(boxes, [image_width, image_height, image_width, image_height])
 
+	return abs_boxes
+
+def to_relative(boxes, image_shape):
+	'''
+	Rescale boxes to be in relative coordinates.
+	'''
+	image_height, image_width, _ = image_shape
+	rel_boxes = tf.divide(boxes, [image_width, image_height, image_width, image_height])
+
+	return rel_boxes

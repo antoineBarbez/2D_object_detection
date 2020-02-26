@@ -1,6 +1,6 @@
 import tensorflow as tf
 
-import models.utils.boxes as box_utils
+import utils.boxes as box_utils
 import utils.metrics as metrics 
 
 class TargetGenerator(object):
@@ -21,10 +21,10 @@ class TargetGenerator(object):
 		self.min_f, self.max_f = foreground_iou_interval
 		self.min_b, self.max_b = background_iou_interval
 
-	def generate_targets(self, gt_labels, gt_boxes, regions):
+	def generate_targets(self, gt_class_labels, gt_boxes, regions):
 		'''
 		Args:
-			- gt_labels: A tensor of shape [max_num_objects, num_classes + 1] representing the 
+			- gt_class_labels: A tensor of shape [max_num_objects, num_classes + 1] representing the 
 				ground-truth class labels possibly passed with zeros.
 			- gt_boxes: A tensor of shape [max_num_objects, 4] representing the 
 				ground-truth bounding boxes possibly passed with zeros.
@@ -33,39 +33,42 @@ class TargetGenerator(object):
 				Faster-RCNN.
 
 		Returns:
-			- target_labels: A tensor of shape [num_regions, num_classes + 1] representing the target
+			- target_class_labels: A tensor of shape [num_regions, num_classes + 1] representing the target
 				labels for each region. The target label for ignored regions is zeros(num_classes + 1).
-			- target_boxes: A tensor of shape [num_regions, 4] representing the target ground-truth bounding box
-				for each region, i.e., the ground-truth bounding box with the higher IoU overlap with the
-				considered region. 
+			- target_boxes_encoded: A tensor of shape [num_regions, 4] representing the encoded target ground-truth 
+				bounding box for each region, i.e., the ground-truth bounding box with the highest IoU 
+				overlap with the considered region. 
 		'''
 
-		image_height, image_width, _ = self.image_shape
-		abs_gt_boxes = tf.multiply(gt_boxes, [image_width, image_height, image_width, image_height])
-		
-		# TODO
-		# Remove padded gt_boxes
+		# Remove padding gt_boxes
+		non_null_gt_boxes_inds = tf.reshape(tf.where(
+			tf.reduce_sum(gt_class_labels, -1) != 0.0), [-1])
+		gt_boxes = tf.gather(gt_boxes, non_null_gt_boxes_inds)
 
+		# Rescale gt_boxes to be in absolute coordnates
+		abs_gt_boxes = box_utils.to_absolute(gt_boxes, self.image_shape)
+
+		# Compute pairwise IoU overlap between regions and ground-truth boxes
 		ious = metrics.iou(regions, abs_gt_boxes, pairwise=True)
 		max_iou_indices = tf.math.argmax(ious, -1)
 		max_iou_per_region = tf.reduce_max(ious, axis=-1)
 		max_iou = tf.reduce_max(max_iou_per_region)
 
-		# Create target labels
+		# Create target class labels
 		background_label = tf.one_hot(0, self.num_classes + 1)
 		ignore_label = tf.zeros(self.num_classes + 1)
 
 		background_condition, ignore_condition = self._get_conditions(max_iou_per_region, max_iou)
 
-		target_labels = tf.gather(gt_labels, max_iou_indices)
-		target_labels = tf.where(background_condition, background_label, target_labels)
-		target_labels = tf.where(ignore_condition, ignore_label, target_labels)
+		target_class_labels = tf.gather(gt_class_labels, max_iou_indices)
+		target_class_labels = tf.where(background_condition, background_label, target_class_labels)
+		target_class_labels = tf.where(ignore_condition, ignore_label, target_class_labels)
 
 		# Create target boxes
 		target_boxes = tf.gather(abs_gt_boxes, max_iou_indices)
-		target_boxes = box_utils.encode(target_boxes, regions)
+		target_boxes_encoded = box_utils.encode(target_boxes, regions)
 
-		return target_labels, target_boxes
+		return target_class_labels, target_boxes_encoded
 
 	def _get_conditions(self, max_iou_per_region, max_iou):
 		foreground_condition = (max_iou_per_region >= self.min_f) & (max_iou_per_region < self.max_f)

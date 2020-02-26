@@ -1,7 +1,7 @@
 import tensorflow as tf
 
 class InputPipelineCreator(object):
-	def __init__(self, num_classes, image_shape, num_steps_per_epoch=1000, max_num_objects=200):
+	def __init__(self, num_classes, image_shape, num_steps_per_epoch, max_num_objects):
 		'''
 		InputPipelineCreator constructor.
 

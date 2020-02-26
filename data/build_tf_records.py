@@ -6,12 +6,12 @@ contains 100 examples (i.e., images + labels).
 '''
 
 import tensorflow as tf
-import data.kitti_classes as kitti_classes
 
 from PIL import Image
 
 import argparse
 import io
+import kitti_classes
 import os
 
 def parse_args():

@@ -1,10 +1,12 @@
 import tensorflow as tf
+import utils.images as image_utils
 
 import argparse
 import datetime
 import os
 import time
 
+from PIL import Image
 from data.input_pipeline import InputPipelineCreator
 from models.rpn import RPN
 
@@ -53,6 +55,7 @@ def parse_args():
 def main():
 	num_classes = 7
 	image_shape = (375, 1242, 3)
+	max_num_objects = 200
 
 	args = parse_args()
 	filenames_train = [os.path.join(args.train_data_dir, f) for f in tf.io.gfile.listdir(args.train_data_dir)]
@@ -61,52 +64,63 @@ def main():
 	pipeline_creator = InputPipelineCreator(
 		num_classes=num_classes,
 		image_shape=image_shape,
-		num_steps_per_epoch=args.num_steps_per_epoch)
+		num_steps_per_epoch=args.num_steps_per_epoch,
+		max_num_objects=max_num_objects)
 	dataset_train = pipeline_creator.create_input_pipeline(filenames_train)
 	dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid, training=False)
-
+	
 	train_classification_loss = tf.keras.metrics.Mean(name='train_classification_loss')
 	train_regression_loss = tf.keras.metrics.Mean(name='train_regression_loss')
 
 	valid_classification_loss = tf.keras.metrics.Mean(name='valid_classification_loss')
 	valid_regression_loss = tf.keras.metrics.Mean(name='valid_regression_loss')
 
+	test_image_path = './data/test_images/000292.png'
 	current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 	train_log_dir = os.path.join(args.logs_dir, current_time, 'rpn', 'train')
 	valid_log_dir = os.path.join(args.logs_dir, current_time, 'rpn', 'valid')
+	image_log_dir = os.path.join(args.logs_dir, current_time, 'rpn', 'image')
 	train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 	valid_summary_writer = tf.summary.create_file_writer(valid_log_dir)
+	image_summary_writer = tf.summary.create_file_writer(image_log_dir)
 
 	learning_rate = tf.keras.optimizers.schedules.PiecewiseConstantDecay([50000], [0.001, 0.0001])
 	optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9)
 
 	model = RPN(image_shape)
 	
+	with image_summary_writer.as_default():
+		image = Image.open(test_image_path)
+		image_utils.draw_anchors_on_image(image, model.anchors, 9)
+		tf.summary.image('Anchors', image_utils.to_tensor(image), step=0)
+		image.close()
+	
 	for epoch in tf.data.Dataset.range(args.num_epochs):
 		for image, classes, boxes in dataset_train:
-			objectness = tf.one_hot(tf.ones(200, dtype=tf.int32), 2)
+			objectness = tf.one_hot(tf.ones(max_num_objects, dtype=tf.int32), 2)
 			cls_loss, reg_loss = model.train_step(image, objectness, boxes, optimizer)
 
 			train_classification_loss(cls_loss)
 			train_regression_loss(reg_loss)
-		
-		with train_summary_writer.as_default():
-			tf.summary.scalar('classification_loss', train_classification_loss.result(), step=epoch)
-			tf.summary.scalar('regression_loss', train_regression_loss.result(), step=epoch)
 
 		for image, classes, boxes in dataset_valid:
-			objectness = tf.one_hot(tf.ones(200, dtype=tf.int32), 2)
+			objectness = tf.one_hot(tf.ones(max_num_objects, dtype=tf.int32), 2)
 			cls_loss, reg_loss = model.test_step(image, objectness, boxes)
 			
 			valid_classification_loss(cls_loss)
 			valid_regression_loss(reg_loss)
+
+		# Update summary
+		with train_summary_writer.as_default():
+			tf.summary.scalar('classification_loss', train_classification_loss.result(), step=epoch)
+			tf.summary.scalar('regression_loss', train_regression_loss.result(), step=epoch)
 		
 		with valid_summary_writer.as_default():
 			tf.summary.scalar('classification_loss', valid_classification_loss.result(), step=epoch)
 			tf.summary.scalar('regression_loss', valid_regression_loss.result(), step=epoch)
 		
-		# Save model checkpoint
 		if (epoch + 1) % 10 == 0:
+			# Save model checkpoint
 			model.save_weights(os.path.join(args.checkpoints_dir, 'checkpoint_{}'.format(epoch + 1),'weights'), save_format='tf')
 
 		# Print metrics of the epoch

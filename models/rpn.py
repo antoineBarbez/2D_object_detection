@@ -1,6 +1,6 @@
 import tensorflow as tf
-import models.utils.boxes as box_utils
-import models.utils.anchors as anchor_utils
+import utils.boxes as box_utils
+import utils.anchors as anchor_utils
 
 from models.object_detection_model import ObjectDetectionModel
 
@@ -78,36 +78,39 @@ class RPN(ObjectDetectionModel):
 			base_anchor_shape=base_anchor_shape)
 		self.image_shape = image_shape
 
-	def postprocess_output(self, anchors, cls_output, reg_output, training):
+	def postprocess_output(self, anchors, pred_class_scores, pred_boxes_encoded, training):
 		'''
 		Postprocess the output of the RPN
 
 		Args:
-			- cls_output: Output of the classification head. A tensor of shape 
-				[num_anchors, 2] representing classification scores for each anchor.
-			- reg_output: Output of the regression head. A tensor of shape [num_anchors, num_class=1, 4]
-				representing encoded predicted box coordinates for each anchor.
-			- training: A boolean value.
+			- anchors: A tensor of shape [num_anchors, 4] representing the anchor boxes.
+			- pred_class_scores: Output of the classification head. A tensor of shape 
+				[num_anchors, 2] representing classification scores.
+			- pred_boxes_encoded: Output of the regression head. A tensor of shape
+				[num_anchors, 1, 4] representing encoded predicted box coordinates.
+			- training: A boolean value indicating whether we are in training mode.
 
 		Returns:
-			roi_scores: A set of objectness scores for the rois.
-			rois: A set of regions of interest, i.e., A set of box proposals.
+			roi_scores: A tensor of shape [num_rois].
+			rois: A tensor of shape [num_rois, 4] representing region proposals.
 		'''
-		boxes = box_utils.decode(reg_output, anchors)
+		pred_boxes_encoded = tf.squeeze(pred_boxes_encoded, 1)
+		pred_boxes = box_utils.decode(pred_boxes_encoded, anchors)
 
 		# Clip boxes to image boundaries
 		image_height, image_width, _ = self.image_shape
-		boxes = box_utils.clip_to_window(boxes, [0, 0, image_width, image_height])
+		pred_boxes = box_utils.clip_to_window(pred_boxes, [0, 0, image_width, image_height])
 
 		# Non Max Suppression
+		pred_scores = pred_class_scores[:, 1]
 		inds_to_keep = tf.image.non_max_suppression(
-		    boxes=boxes,
-		    scores=cls_output,
+		    boxes=pred_boxes,
+		    scores=pred_scores,
 		    max_output_size=2000 if training else 300,
 		    iou_threshold=0.7)
 
-		rois = tf.gather(boxes, inds_to_keep)
-		roi_scores = tf.gather(cls_output, inds_to_keep)
+		rois = tf.gather(pred_boxes, inds_to_keep)
+		roi_scores = tf.gather(pred_scores, inds_to_keep)
 
 		return roi_scores, rois
 
@@ -120,43 +123,44 @@ class RPN(ObjectDetectionModel):
 
 		Returns:
 			- anchors: Anchor boxes to be used for postprocessing, shape = [num_anchors, 4].
-			- cls_output: Output of the classification head. A tensor of shape 
+			- pred_class_scores: Output of the classification head. A tensor of shape 
 				[num_anchors, 2] representing classification scores for each anchor.
-			- reg_output: Output of the regression head. A tensor of shape [num_anchors, num_class=1, 4]
+			- pred_boxes_encoded: Output of the regression head. A tensor of shape [num_anchors, num_classes=1, 4]
 				representing encoded predicted box coordinates for each anchor.
 		'''
 		features = self.intermediate_layer(feature_maps)
 		
-		cls_output = self.cls_layer(features)
-		cls_output = self.cls_reshape(cls_output)
-		cls_output = self.cls_activation(cls_output)
-		cls_output = tf.squeeze(cls_output, [0])
+		pred_class_scores = self.cls_layer(features)
+		pred_class_scores = self.cls_reshape(pred_class_scores)
+		pred_class_scores = self.cls_activation(pred_class_scores)
+		pred_class_scores = tf.squeeze(pred_class_scores, [0])
 
-		reg_output = self.reg_layer(features)
-		reg_output = self.reg_reshape(reg_output)
-		reg_output = tf.squeeze(reg_output, [0])
+		pred_boxes_encoded = self.reg_layer(features)
+		pred_boxes_encoded = self.reg_reshape(pred_boxes_encoded)
+		pred_boxes_encoded = tf.squeeze(pred_boxes_encoded, [0])
 
 		if training:
-			anchors, cls_output, reg_output = self._remove_invalid_anchors_and_predictions(cls_output, reg_output)
+			anchors, pred_class_scores, pred_boxes_encoded = (
+				self._remove_invalid_anchors_and_predictions(pred_class_scores, pred_boxes_encoded))
 		else:
 			image_height, image_width, _ = self.image_shape
 			anchors = box_utils.clip_to_window(self.anchors, [0, 0, image_width, image_height])
 			
-		return anchors, cls_output, reg_output
+		return anchors, pred_class_scores, pred_boxes_encoded
 
-	def _remove_invalid_anchors_and_predictions(self, cls_output, reg_output):
+	def _remove_invalid_anchors_and_predictions(self, pred_class_scores, pred_boxes_encoded):
 		'''
 		Remove anchors that overlap with the image boundaries, as well as 
 		the corresponding predictions.
 
 		Args:
-			- cls_output: Output of the classification head. A tensor of shape 
+			- pred_class_scores: Output of the classification head. A tensor of shape 
 				[num_anchors, 2] representing classification scores for each anchor.
-			- reg_output: Output of the regression head. A tensor of shape [num_anchors, num_class=1, 4]
+			- pred_boxes_encoded: Output of the regression head. A tensor of shape [num_anchors, num_classes=1, 4]
 				representing encoded predicted box coordinates for each anchor.
 		
 		Returns:
-			filtered anchors, cls_output, and reg_output.
+			filtered anchors, pred_class_scores, and pred_boxes_encoded.
 		'''
 		image_height, image_width, _ = self.image_shape
 		inds_to_keep = tf.reshape(
@@ -167,8 +171,8 @@ class RPN(ObjectDetectionModel):
 				(self.anchors[:, 3] <= image_height)),
 			[-1])
 
-		filtered_anchors = tf.gather(self.anchors, inds_to_keep)
-		filtered_cls_output = tf.gather(cls_output, inds_to_keep)
-		filtered_reg_output = tf.gather(reg_output, inds_to_keep)
+		anchors = tf.gather(self.anchors, inds_to_keep)
+		pred_class_scores = tf.gather(pred_class_scores, inds_to_keep)
+		pred_boxes_encoded = tf.gather(pred_boxes_encoded, inds_to_keep)
 
-		return filtered_anchors, filtered_cls_output, filtered_reg_output
+		return anchors, pred_class_scores, pred_boxes_encoded
