@@ -1,30 +1,38 @@
 import tensorflow as tf
 
 class InputPipelineCreator(object):
-	def __init__(self, num_classes, image_shape, num_steps_per_epoch, max_num_objects):
+	def __init__(self, num_classes, image_shape, max_num_objects):
 		'''
 		InputPipelineCreator constructor.
 
 		Args:
 			- num_classes: Number of classes.
 			- image_shape: Shape of the input images. Images that have a different shape
-				in the data will be clipped and/or padded to the desired shape.
-			- num_steps_per_epoch: Number of images to return in training mode. 
+				in the data will be clipped and/or padded to the desired shape. 
 			- max_num_objects: Maximum number of object to keep per image.
 		'''
 		self.num_classes = num_classes
 		self.image_shape = image_shape
-		self.num_steps_per_epoch = num_steps_per_epoch
 		self.max_num_objects = max_num_objects
 		
-	def create_input_pipeline(self, filenames, training=True):
+	def create_input_pipeline(self, 
+		filenames, 
+		batch_size, 
+		shuffle_buffer_size=None, 
+		num_steps_per_epoch=None, 
+		augmentation=False):
 		'''
 		Create an optimized input pipeline.
 
 		Args:
 			- filenames: List of paths to TFRecord data files.
-			- training: (Default: True) Boolean value indicating whether the dataset
-				will be used for training.
+			- batch_size: Size of the batches of data.
+			- shuffle_buffer_size: Size of the buffer used to shuffle the dataset.
+				If None no shuffleing is performed.
+			- num_steps_per_epoch: Number of batches to return. 
+				If None, the whole dataset is returned. 
+			- augmentation: Boolean value indicating whether to perform data 
+				augmentation on the data.
 
 		Returns:
 			A tf.data.Dataset object.
@@ -39,13 +47,21 @@ class InputPipelineCreator(object):
 			num_parallel_calls=tf.data.experimental.AUTOTUNE
 		)
 		dataset = dataset.cache()
-		if training:
-			dataset = dataset.shuffle(7000)
-			dataset = dataset.take(self.num_steps_per_epoch)
+		
+		if shuffle_buffer_size is not None:
+			dataset = dataset.shuffle(shuffle_buffer_size)
+
+		dataset = dataset.batch(batch_size)
+
+		if num_steps_per_epoch is not None:
+			dataset = dataset.take(num_steps_per_epoch)
+		
+		if augmentation:
 			dataset = dataset.map(
-				self._augment,
+				self._augment_batch,
 				num_parallel_calls=tf.data.experimental.AUTOTUNE
 			)
+
 		dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
 		
 		return dataset
@@ -81,6 +97,12 @@ class InputPipelineCreator(object):
 		boxes = tf.cond(do_flip, lambda: _flip_boxes(boxes), lambda: boxes)
 
 		return image, classes, boxes
+
+	def _augment_batch(self, images, classes, boxes):
+		return tf.map_fn(
+			fn=lambda x: self._augment(x[0], x[1], x[2]),
+			elems=(images, classes, boxes),
+			dtype=(tf.float32, tf.float32, tf.float32))
 
 	def _decode_and_preprocess(self, value):
 		'''

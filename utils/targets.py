@@ -15,13 +15,20 @@ class TargetGenerator(object):
 				bounding box in this interval are labeled as background.
 		'''
 		super(TargetGenerator, self).__init__()
-		self.image_shape = image_shape
-		self.num_classes = num_classes
+		self._image_shape = image_shape
+		self._num_classes = num_classes
 
-		self.min_f, self.max_f = foreground_iou_interval
-		self.min_b, self.max_b = background_iou_interval
+		self._min_f, self._max_f = foreground_iou_interval
+		self._min_b, self._max_b = background_iou_interval
 
-	def generate_targets(self, gt_class_labels, gt_boxes, regions):
+	def generate_targets_batch(self, gt_class_labels, gt_boxes, regions):
+
+		return tf.map_fn(
+			fn=lambda x: self._generate_targets(x[0], x[1], regions),
+			elems=(gt_class_labels, gt_boxes),
+			dtype=(tf.float32, tf.float32))
+
+	def _generate_targets(self, gt_class_labels, gt_boxes, regions):
 		'''
 		Args:
 			- gt_class_labels: A tensor of shape [max_num_objects, num_classes + 1] representing the 
@@ -46,7 +53,7 @@ class TargetGenerator(object):
 		gt_boxes = tf.gather(gt_boxes, non_null_gt_boxes_inds)
 
 		# Rescale gt_boxes to be in absolute coordnates
-		abs_gt_boxes = box_utils.to_absolute(gt_boxes, self.image_shape)
+		abs_gt_boxes = box_utils.to_absolute(gt_boxes, self._image_shape)
 
 		# Compute pairwise IoU overlap between regions and ground-truth boxes
 		ious = metrics.iou(regions, abs_gt_boxes, pairwise=True)
@@ -55,8 +62,8 @@ class TargetGenerator(object):
 		max_iou = tf.reduce_max(max_iou_per_region)
 
 		# Create target class labels
-		background_label = tf.one_hot(0, self.num_classes + 1)
-		ignore_label = tf.zeros(self.num_classes + 1)
+		background_label = tf.one_hot(0, self._num_classes + 1)
+		ignore_label = tf.zeros(self._num_classes + 1)
 
 		background_condition, ignore_condition = self._get_conditions(max_iou_per_region, max_iou)
 
@@ -71,18 +78,18 @@ class TargetGenerator(object):
 		return target_class_labels, target_boxes_encoded
 
 	def _get_conditions(self, max_iou_per_region, max_iou):
-		foreground_condition = (max_iou_per_region >= self.min_f) & (max_iou_per_region < self.max_f)
+		foreground_condition = (max_iou_per_region >= self._min_f) & (max_iou_per_region < self._max_f)
 		foreground_condition = foreground_condition | (max_iou_per_region == max_iou)
 
-		background_condition = (max_iou_per_region >= self.min_b) & (max_iou_per_region < self.max_b)
+		background_condition = (max_iou_per_region >= self._min_b) & (max_iou_per_region < self._max_b)
 		background_condition = background_condition & (max_iou_per_region != max_iou)
 
 		ignore_condition = tf.math.logical_not(foreground_condition | background_condition)
 
 		background_condition = tf.expand_dims(background_condition, 1)
-		background_condition = tf.tile(background_condition, [1, self.num_classes + 1])
+		background_condition = tf.tile(background_condition, [1, self._num_classes + 1])
 
 		ignore_condition = tf.expand_dims(ignore_condition, 1)
-		ignore_condition = tf.tile(ignore_condition, [1, self.num_classes + 1])
+		ignore_condition = tf.tile(ignore_condition, [1, self._num_classes + 1])
 
 		return background_condition, ignore_condition

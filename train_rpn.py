@@ -49,7 +49,12 @@ def parse_args():
 		'--num-steps-per-epoch',
 		default=1000,
 		type=int,
-		help='number of parameters update per epoch, default=1000')
+		help='Number of parameters update per epoch, default=1000')
+	parser.add_argument(
+		'--batch-size',
+		default=4,
+		type=int,
+		help='Size of the batches used to update parameters, default=4.')
 	return parser.parse_args()
 
 def main():
@@ -64,10 +69,14 @@ def main():
 	pipeline_creator = InputPipelineCreator(
 		num_classes=num_classes,
 		image_shape=image_shape,
-		num_steps_per_epoch=args.num_steps_per_epoch,
 		max_num_objects=max_num_objects)
-	dataset_train = pipeline_creator.create_input_pipeline(filenames_train)
-	dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid, training=False)
+	dataset_train = pipeline_creator.create_input_pipeline(
+		filenames=filenames_train, 
+		batch_size=args.batch_size, 
+		shuffle_buffer_size=7000, 
+		num_steps_per_epoch=args.num_steps_per_epoch, 
+		augmentation=True)
+	dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid, 1)
 	
 	train_classification_loss = tf.keras.metrics.Mean(name='train_classification_loss')
 	train_regression_loss = tf.keras.metrics.Mean(name='train_regression_loss')
@@ -91,21 +100,19 @@ def main():
 	
 	with image_summary_writer.as_default():
 		image = Image.open(test_image_path)
-		image_utils.draw_anchors_on_image(image, model.anchors, 9)
+		image_utils.draw_anchors_on_image(image, model.detector.anchors, 9)
 		tf.summary.image('Anchors', image_utils.to_tensor(image), step=0)
 		image.close()
 	
 	for epoch in tf.data.Dataset.range(args.num_epochs):
-		for image, classes, boxes in dataset_train:
-			objectness = tf.one_hot(tf.ones(max_num_objects, dtype=tf.int32), 2)
-			cls_loss, reg_loss = model.train_step(image, objectness, boxes, optimizer)
+		for images, classes, boxes in dataset_train:
+			cls_loss, reg_loss = model.train_step(images, classes, boxes, optimizer)
 
 			train_classification_loss(cls_loss)
 			train_regression_loss(reg_loss)
 
-		for image, classes, boxes in dataset_valid:
-			objectness = tf.one_hot(tf.ones(max_num_objects, dtype=tf.int32), 2)
-			cls_loss, reg_loss = model.test_step(image, objectness, boxes)
+		for images, classes, boxes in dataset_valid:
+			cls_loss, reg_loss = model.test_step(images, classes, boxes)
 			
 			valid_classification_loss(cls_loss)
 			valid_regression_loss(reg_loss)
