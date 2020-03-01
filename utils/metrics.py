@@ -1,33 +1,50 @@
 import tensorflow as tf
 
-class MeanIOU(tf.keras.metrics.Mean):
-	'''
-	Mean intersection over union metric class
-	'''
-	def __init__(self, name='intersection_over_union', dtype=None):
-		'''
-		Creates a `IOU` instance.
-		
-		Args:
-			name: (Optional) string name of the metric instance.
-			dtype: (Optional) data type of the metric result.
-		'''
-		super(MeanIOU, self).__init__(name=name, dtype=dtype)
+class AveragePrecision(tf.keras.metrics.Metric):
+	def __init__(self, iou_threshold, **kwargs):
+		super(AveragePrecision, self).__init__(**kwargs)
 
-	def update_state(self, gt_boxes, pr_boxes):
-		'''
-		Accumulates metric statistics.
-		
-		Args:
-			gt_boxes: Batch of ground truth bounding boxes coordinates
-			pr_boxes: Batch of predicted bounding boxes coordinates.
-		
-		Returns:
-			Update op.
-		'''
-		mean_iou = tf.reduce_mean(iou(gt_boxes, pr_boxes))
+		self.iou_threshold = iou_threshold
 
-		return super(IOU, self).update_state(mean_iou)
+		self.auc = tf.keras.metrics.AUC(num_thresholds=50, curve='PR')
+
+	def reset_states(self):
+		self.auc.reset_states()
+
+	def result(self):
+		return self.auc.result()
+
+	def update_state(self, gt_boxes, pred_boxes, pred_scores):
+		'''
+		Args:
+			- gt_boxes: A tensor of shape [batch_size, max_num_objects, 4] possibly zero padded 
+				representing the ground-truth boxes.
+			- pred_boxes: A tensor of shape [batch_size, max_predictions, 4] possibly zero padded 
+				representing predicted bounding-boxes.
+			- pred_scores: A tensor of shape [batch_size, max_predictions] possibly zero padded 
+				representing the scores for each predicted box.
+		'''
+		batch_size = tf.shape(pred_boxes)[0]
+		for i in range(batch_size):
+			self.update_auc_state(gt_boxes[i], pred_boxes[i], pred_scores[i])
+
+	def update_auc_state(self, gt_boxes, pred_boxes, pred_scores):
+		'''
+		Args:
+			- gt_boxes: A tensor of shape [max_num_objects, 4] possibly zero padded 
+				representing the ground-truth boxes.
+			- pred_boxes: A tensor of shape [max_predictions, 4] possibly zero padded 
+				representing predicted bounding-boxes.
+			- pred_scores: A tensor of shape [max_predictions] possibly zero padded 
+				representing the scores for each predicted box.
+		'''
+		ious = iou(gt_boxes, pred_boxes, pairwise=True)
+		ious = tf.reduce_max(ious, axis=0)
+
+		true_scores = tf.cast(ious > self.iou_threshold, dtype=tf.float32)
+
+		self.auc.update_state(true_scores, pred_scores)
+
 
 def area(boxes):
 	'''

@@ -32,6 +32,7 @@ class ObjectDetectionModel(tf.keras.Model):
 				they do not contribute to the training objective.
 		'''
 		super(ObjectDetectionModel, self).__init__(**kwargs)
+		self._image_shape = image_shape
 		self._foreground_proportion = foreground_proportion
 		self._target_generator = TargetGenerator(
 			image_shape=image_shape,
@@ -90,6 +91,14 @@ class ObjectDetectionModel(tf.keras.Model):
 		'''
 		return self._detector.postprocess_output(regions, pred_class_scores, pred_boxes_encoded, **kwargs)
 
+	@tf.function
+	def predict(self, images, **kwargs):
+		image_height, image_width, _ = self._image_shape
+		resized_images = tf.image.resize(images, [image_height, image_width])
+		regions, pred_class_scores, pred_boxes_encoded = self.call(resized_images, **kwargs)
+
+		return self.postprocess_output(regions, pred_class_scores, pred_boxes_encoded)
+
 	def classification_loss(self, target_class_labels, pred_class_scores):
 		'''
 		Args:
@@ -143,6 +152,8 @@ class ObjectDetectionModel(tf.keras.Model):
 		with tf.GradientTape() as tape:
 			regions, pred_class_scores, pred_boxes_encoded = self.call(images, True, **kwargs)
 
+			pred_scores, pred_boxes = self.postprocess_output(regions, pred_class_scores, pred_boxes_encoded)
+
 			target_class_labels, target_boxes_encoded = (
 				self._target_generator.generate_targets_batch(
 					gt_class_labels=gt_class_labels,
@@ -163,12 +174,12 @@ class ObjectDetectionModel(tf.keras.Model):
 				target_class_labels, 
 				target_boxes_encoded, 
 				pred_boxes_encoded)
-			multi_task_loss = cls_loss + 10*reg_loss + sum(self.losses)
+			multi_task_loss = cls_loss + reg_loss + sum(self.losses)
 
 		gradients = tape.gradient(multi_task_loss, self.trainable_variables)
 		optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
-		return cls_loss, reg_loss
+		return cls_loss, reg_loss, pred_scores, pred_boxes
 
 	@tf.function
 	def test_step(self, images, gt_class_labels, gt_boxes, 
@@ -188,6 +199,8 @@ class ObjectDetectionModel(tf.keras.Model):
 		'''
 		regions, pred_class_scores, pred_boxes_encoded = self.call(images, False, **kwargs)
 		
+		pred_scores, pred_boxes = self.postprocess_output(regions, pred_class_scores, pred_boxes_encoded)
+
 		target_class_labels, target_boxes_encoded = (
 			self._target_generator.generate_targets_batch(
 				gt_class_labels=gt_class_labels,
@@ -209,7 +222,7 @@ class ObjectDetectionModel(tf.keras.Model):
 			target_boxes_encoded, 
 			pred_boxes_encoded)
 		
-		return cls_loss, reg_loss
+		return cls_loss, reg_loss, pred_scores, pred_boxes
 
 	def _sample_batch(self,
 		target_class_labels,

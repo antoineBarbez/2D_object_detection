@@ -3,10 +3,11 @@ from PIL import ImageDraw, ImageFont
 import io
 import math
 
+import utils.boxes as box_utils
 import seaborn as sns
 import tensorflow as tf
 
-def draw_box_on_image(image, box, label=None, color='red', thickness=2):
+def draw_box_on_image(image, box, label=None, relative=False, color='red', thickness=2):
 	'''
 	Draw a box on an image
 
@@ -14,14 +15,18 @@ def draw_box_on_image(image, box, label=None, color='red', thickness=2):
 		- image: A PIL Image object.
 		- box: Coordinates of the bounding box.
 		- label: (Optional) Text to add on top of the bounding box.
+		- relative: Whether the boxe is in relative or absolute coordinates.
 		- color: (Default: red) Color of the bounding box.
 		- thickness: (Default: 2px) Thickness of the line of the bounding box.
 	'''
-	draw = ImageDraw.Draw(image)
-
 	# Draw bounding box on image
+	if relative:
+		width, height = image.size
+		box = box_utils.to_absolute(box, [height, width, 3])
+
 	x_min, y_min, x_max, y_max = box
 
+	draw = ImageDraw.Draw(image)
 	draw.line(
 		[(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max), (x_min, y_min)],
 		width=thickness,
@@ -42,7 +47,7 @@ def draw_box_on_image(image, box, label=None, color='red', thickness=2):
 			font=font)
 
 def draw_predictions_on_image(image, boxes, class_scores=None, 
-	class_names=None, default_color='red', thickness=2):
+	class_names=None, relative=False, default_color='red', thickness=2):
 	'''
 	Draw predicted boxes with scores on image.
 
@@ -51,6 +56,7 @@ def draw_predictions_on_image(image, boxes, class_scores=None,
 		- boxes: A tensor of shape [num_pred, 4].
 		- class_scores: A tensor of shape [num_pred, num_classes].
 		- class_names: A list of size num_classes.
+		- relative: Whether the boxes are in relative or absolute coordinates.
 		- default_color: (Default: 'red') Color to use for boxes if class_scores and 
 			class_names are not specified.
 		- thickness: (Default: 2px) Thickness of the line of the bounding box.
@@ -74,6 +80,7 @@ def draw_predictions_on_image(image, boxes, class_scores=None,
 			image=image, 
 			box=box,
 			label=label,
+			relative=relative,
 			color=color,
 			thickness=thickness)
 

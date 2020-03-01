@@ -110,7 +110,7 @@ class RPNDetector(Detector):
 			
 		return anchors, pred_class_scores, pred_boxes_encoded
 	
-	def postprocess_output(self, anchors, pred_class_scores, pred_boxes_encoded, training):
+	def postprocess_output(self, anchors, pred_class_scores, pred_boxes_encoded, training=False):
 		'''
 		Postprocess the output of the RPN
 

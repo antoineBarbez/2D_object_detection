@@ -19,8 +19,8 @@ class _LayersOverride(object):
 	def __getattr__(self, item):
 		return getattr(tf.keras.layers, item)
 
-def preprocess_input(image):
-	return tf.keras.applications.imagenet_utils.preprocess_input(image, mode='tf')
+def preprocess_input(images):
+	return tf.keras.applications.imagenet_utils.preprocess_input(images, mode='tf')
 
 def ResNet50FeatureExtractor(
 		kernel_regularizer=None,

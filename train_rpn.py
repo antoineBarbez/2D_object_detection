@@ -1,10 +1,10 @@
 import tensorflow as tf
 import utils.images as image_utils
+import utils.metrics as metric_utils
 
 import argparse
 import datetime
 import os
-import time
 
 from PIL import Image
 from data.input_pipeline import InputPipelineCreator
@@ -80,9 +80,11 @@ def main():
 	
 	train_classification_loss = tf.keras.metrics.Mean(name='train_classification_loss')
 	train_regression_loss = tf.keras.metrics.Mean(name='train_regression_loss')
+	train_average_precision = metric_utils.AveragePrecision(0.5, name='train_ap_0.5')
 
 	valid_classification_loss = tf.keras.metrics.Mean(name='valid_classification_loss')
 	valid_regression_loss = tf.keras.metrics.Mean(name='valid_regression_loss')
+	valid_average_precision = metric_utils.AveragePrecision(0.5, name='valid_ap_0.5')
 
 	test_image_path = './data/test_images/000292.png'
 	current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -106,36 +108,52 @@ def main():
 	
 	for epoch in tf.data.Dataset.range(args.num_epochs):
 		for images, classes, boxes in dataset_train:
-			cls_loss, reg_loss = model.train_step(images, classes, boxes, optimizer)
+			cls_loss, reg_loss, pred_scores, pred_boxes = model.train_step(images, classes, boxes, optimizer)
 
 			train_classification_loss(cls_loss)
 			train_regression_loss(reg_loss)
 
 		for images, classes, boxes in dataset_valid:
-			cls_loss, reg_loss = model.test_step(images, classes, boxes)
+			cls_loss, reg_loss, pred_scores, pred_boxes = model.test_step(images, classes, boxes)
 			
 			valid_classification_loss(cls_loss)
 			valid_regression_loss(reg_loss)
+			valid_average_precision(boxes, pred_boxes, pred_scores)
 
 		# Update summary
 		with train_summary_writer.as_default():
-			tf.summary.scalar('classification_loss', train_classification_loss.result(), step=epoch)
-			tf.summary.scalar('regression_loss', train_regression_loss.result(), step=epoch)
-		
+			tf.summary.scalar('classification_loss', train_classification_loss.result(), step=epoch + 1)
+			tf.summary.scalar('regression_loss', train_regression_loss.result(), step=epoch + 1)
+			tf.summary.scalar('average_precision', train_average_precision.result(), step=epoch + 1)
+
 		with valid_summary_writer.as_default():
-			tf.summary.scalar('classification_loss', valid_classification_loss.result(), step=epoch)
-			tf.summary.scalar('regression_loss', valid_regression_loss.result(), step=epoch)
+			tf.summary.scalar('classification_loss', valid_classification_loss.result(), step=epoch + 1)
+			tf.summary.scalar('regression_loss', valid_regression_loss.result(), step=epoch + 1)
+			tf.summary.scalar('average_precision', valid_average_precision.result(), step=epoch + 1)
 		
 		if (epoch + 1) % 10 == 0:
 			# Save model checkpoint
 			model.save_weights(os.path.join(args.checkpoints_dir, 'checkpoint_{}'.format(epoch + 1),'weights'), save_format='tf')
+			
+			# Add Top 10 best predictions to summary
+			with image_summary_writer.as_default():
+				image = Image.open(test_image_path)
+				tensor_image = image_utils.to_tensor(image)
+				tensor_image = tf.cast(tensor_image, dtype=tf.float32)
+				
+				_, pred_boxes = model.predict(tensor_image)
+				top_10_pred_boxes = pred_boxes[0, :10]
+
+				image_utils.draw_predictions_on_image(image, top_10_pred_boxes, relative=True)
+				tf.summary.image('Top 10 best proposals', image_utils.to_tensor(image), step=epoch + 1)
+				image.close()
 
 		# Print metrics of the epoch
 		template = 'Epoch {0}/{1}: \n'
 		template += '\tTraining   Set --> Classification Loss: {2:.2f}, Regression Loss: {3:.2f}\n'
 		template += '\tValidation Set --> Classification Loss: {4:.2f}, Regression Loss: {5:.2f}\n'
 
-		print(template.format(
+		tf.print(template.format(
 			epoch + 1,
 			args.num_epochs,
 			train_classification_loss.result(),
@@ -148,6 +166,7 @@ def main():
 		train_regression_loss.reset_states()
 		valid_classification_loss.reset_states()
 		valid_regression_loss.reset_states()
+		valid_average_precision.reset_states()
 
 if __name__ == "__main__":
 	main()
