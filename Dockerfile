@@ -15,7 +15,6 @@ RUN mkdir -p /root/data
 COPY data/__init__.py /root/data/__init__.py
 COPY data/input_pipeline.py /root/data/input_pipeline.py
 COPY data/kitti_classes.py /root/data/kitti_classes.py
-COPY data/test_images /root/data/test_images
 
 COPY models /root/models
 COPY utils /root/utils

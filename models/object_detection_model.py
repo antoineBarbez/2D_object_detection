@@ -12,6 +12,7 @@ class ObjectDetectionModel(tf.keras.Model):
 		foreground_proportion,
 		foreground_iou_interval, 
 		background_iou_interval,
+		log_dir=None,
 		**kwargs):
 		'''
 		Instantiate an ObjectDetectionModel.
@@ -48,6 +49,23 @@ class ObjectDetectionModel(tf.keras.Model):
 
 		self._cce = tf.keras.losses.CategoricalCrossentropy()
 		self._huber = tf.keras.losses.Huber(reduction=tf.keras.losses.Reduction.NONE)
+
+
+		'''self.train_classification_loss = tf.keras.metrics.Mean(name='train_classification_loss')
+		self.train_regression_loss = tf.keras.metrics.Mean(name='train_regression_loss')
+		self.train_average_precision = metric_utils.AveragePrecision(0.5, name='train_ap_0.5')
+
+		self.valid_classification_loss = tf.keras.metrics.Mean(name='valid_classification_loss')
+		self.valid_regression_loss = tf.keras.metrics.Mean(name='valid_regression_loss')
+		self.valid_average_precision = metric_utils.AveragePrecision(0.5, name='valid_ap_0.5')
+
+		if log_dir is not None:
+			train_log_dir = os.path.join(log_dir, self.name, 'train')
+			valid_log_dir = os.path.join(log_dir, self.name, 'valid')
+
+			self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+			self.valid_summary_writer = tf.summary.create_file_writer(valid_log_dir)'''
+
 
 	@property
 	def detector(self):
@@ -152,32 +170,33 @@ class ObjectDetectionModel(tf.keras.Model):
 		with tf.GradientTape() as tape:
 			regions, pred_class_scores, pred_boxes_encoded = self.call(images, True, **kwargs)
 
-			pred_scores, pred_boxes = self.postprocess_output(regions, pred_class_scores, pred_boxes_encoded)
-
 			target_class_labels, target_boxes_encoded = (
 				self._target_generator.generate_targets_batch(
 					gt_class_labels=gt_class_labels,
 					gt_boxes=gt_boxes,
 					regions=regions))
 			
-			(target_class_labels, target_boxes_encoded, 
-			 pred_class_scores, pred_boxes_encoded) = self._sample_batch(
+			(target_class_labels_sample, target_boxes_encoded_sample, 
+			 pred_class_scores_sample, pred_boxes_encoded_sample, _) = self._sample_batch(
 				target_class_labels=target_class_labels,
 				target_boxes_encoded=target_boxes_encoded,
 				pred_class_scores=pred_class_scores,
 				pred_boxes_encoded=pred_boxes_encoded,
+				regions=regions,
 				num_samples_per_image=num_samples_per_image,
 				foreground_proportion=self._foreground_proportion)
 			
-			cls_loss = self.classification_loss(target_class_labels, pred_class_scores)
+			cls_loss = self.classification_loss(target_class_labels_sample, pred_class_scores_sample)
 			reg_loss = self.regression_loss(
-				target_class_labels, 
-				target_boxes_encoded, 
-				pred_boxes_encoded)
+				target_class_labels_sample, 
+				target_boxes_encoded_sample, 
+				pred_boxes_encoded_sample)
 			multi_task_loss = cls_loss + reg_loss + sum(self.losses)
 
 		gradients = tape.gradient(multi_task_loss, self.trainable_variables)
 		optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+
+		pred_scores, pred_boxes = self.postprocess_output(regions, pred_class_scores, pred_boxes_encoded)
 
 		return cls_loss, reg_loss, pred_scores, pred_boxes
 
@@ -198,8 +217,6 @@ class ObjectDetectionModel(tf.keras.Model):
 			Two scalars, the test classification and regression losses. 
 		'''
 		regions, pred_class_scores, pred_boxes_encoded = self.call(images, False, **kwargs)
-		
-		pred_scores, pred_boxes = self.postprocess_output(regions, pred_class_scores, pred_boxes_encoded)
 
 		target_class_labels, target_boxes_encoded = (
 			self._target_generator.generate_targets_batch(
@@ -207,41 +224,52 @@ class ObjectDetectionModel(tf.keras.Model):
 				gt_boxes=gt_boxes,
 				regions=regions))
 		
-		(target_class_labels, target_boxes_encoded, 
-		 pred_class_scores, pred_boxes_encoded) = self._sample_batch(
+		(target_class_labels_sample, target_boxes_encoded_sample, 
+		 pred_class_scores_sample, pred_boxes_encoded_sample, regions_sample) = self._sample_batch(
 			target_class_labels=target_class_labels,
 			target_boxes_encoded=target_boxes_encoded,
 			pred_class_scores=pred_class_scores,
 			pred_boxes_encoded=pred_boxes_encoded,
+			regions=regions,
 			num_samples_per_image=num_samples_per_image,
 			foreground_proportion=self._foreground_proportion) 
 		
-		cls_loss = self.classification_loss(target_class_labels, pred_class_scores)
+		cls_loss = self.classification_loss(target_class_labels_sample, pred_class_scores_sample)
 		reg_loss = self.regression_loss(
-			target_class_labels, 
-			target_boxes_encoded, 
-			pred_boxes_encoded)
-		
-		return cls_loss, reg_loss, pred_scores, pred_boxes
+			target_class_labels_sample, 
+			target_boxes_encoded_sample, 
+			pred_boxes_encoded_sample)
+
+		pred_scores, pred_boxes = self.postprocess_output(regions, pred_class_scores, pred_boxes_encoded)
+
+		foreground_inds = tf.where(target_class_labels_sample[..., 0] == 0.0)
+		foreground_regions = tf.gather_nd(regions_sample, foreground_inds)
+
+		background_inds = tf.where(target_class_labels_sample[..., 0] == 1.0)
+		background_regions = tf.gather_nd(regions_sample, background_inds)
+
+		return cls_loss, reg_loss, pred_scores, pred_boxes, foreground_regions, background_regions
 
 	def _sample_batch(self,
 		target_class_labels,
 		target_boxes_encoded,
 		pred_class_scores,
 		pred_boxes_encoded,
+		regions,
 		num_samples_per_image,
 		foreground_proportion):
 
 		return tf.map_fn(
-		 	fn=lambda x: self._sample_image(x[0], x[1], x[2], x[3], num_samples_per_image, foreground_proportion),
+		 	fn=lambda x: self._sample_image(x[0], x[1], x[2], x[3], regions, num_samples_per_image, foreground_proportion),
 		 	elems=(target_class_labels, target_boxes_encoded, pred_class_scores, pred_boxes_encoded),
-		 	dtype=(tf.float32, tf.float32, tf.float32, tf.float32))
+		 	dtype=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32))
 
 	def _sample_image(self,
 		target_class_labels,
 		target_boxes_encoded,
 		pred_class_scores,
 		pred_boxes_encoded,
+		regions,
 		num_samples,
 		foreground_proportion):
 		''' 
@@ -255,14 +283,14 @@ class ObjectDetectionModel(tf.keras.Model):
 				[num_regions, num_classes + 1] representing classification scores.
 			- pred_boxes_encoded: Output of the regression head. A tensor of shape
 				[num_regions, num_classes + 1, 4] representing encoded predicted box coordinates.
-			- minibatch_size: Number of examples (regions) to sample per image.
+			- num_samples: Number of examples (regions) to sample per image.
 			- foreground_proportion: Maximum proportion of foreground vs background  
 				examples to sample in each minibatch. This parameter is set to 0.5 for
 				the RPN and 0.25 for the Faster-RCNN according to the respective papers.
 
 		Returns:
 			sampled target_class_labels, target_boxes_encoded, pred_class_scores, and 
-			pred_boxes_encoded. The first dimension of these tensors equals minibatch_size.
+			pred_boxes_encoded. The first dimension of these tensors equals num_samples.
 		'''
 
 		foreground_inds = tf.reshape(tf.where(
@@ -284,16 +312,17 @@ class ObjectDetectionModel(tf.keras.Model):
 			tf.cast(tf.math.round(num_samples*foreground_proportion), dtype=tf.int32))
 		num_background_regions_to_keep = num_samples - num_foreground_regions_to_keep
 		
-		inds_to_keep = tf.concat([
-			foreground_inds[:num_foreground_regions_to_keep],
-			background_inds[:num_background_regions_to_keep]], 0)
+		foreground_inds = foreground_inds[:num_foreground_regions_to_keep]
+		background_inds = background_inds[:num_background_regions_to_keep]
+
+		inds_to_keep = tf.concat([foreground_inds, background_inds], 0)
 		inds_to_keep.set_shape([num_samples])
 
 		target_class_labels_sample = tf.gather(target_class_labels, inds_to_keep)
 		pred_class_scores_sample = tf.gather(pred_class_scores, inds_to_keep)
 		target_boxes_encoded_sample = tf.gather(target_boxes_encoded, inds_to_keep)
 		pred_boxes_encoded_sample = tf.gather(pred_boxes_encoded, inds_to_keep)
-		
+		regions_sample = tf.gather(regions, inds_to_keep)
 
 		return (target_class_labels_sample, target_boxes_encoded_sample, 
-			pred_class_scores_sample, pred_boxes_encoded_sample) 
+			pred_class_scores_sample, pred_boxes_encoded_sample, regions_sample)

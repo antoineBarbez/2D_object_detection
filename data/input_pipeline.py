@@ -15,24 +15,14 @@ class InputPipelineCreator(object):
 		self.image_shape = image_shape
 		self.max_num_objects = max_num_objects
 		
-	def create_input_pipeline(self, 
-		filenames, 
-		batch_size, 
-		shuffle_buffer_size=None, 
-		num_steps_per_epoch=None, 
-		augmentation=False):
+	def create_input_pipeline(self, filenames, batch_size=1, training=False):
 		'''
 		Create an optimized input pipeline.
 
 		Args:
 			- filenames: List of paths to TFRecord data files.
 			- batch_size: Size of the batches of data.
-			- shuffle_buffer_size: Size of the buffer used to shuffle the dataset.
-				If None no shuffleing is performed.
-			- num_steps_per_epoch: Number of batches to return. 
-				If None, the whole dataset is returned. 
-			- augmentation: Boolean value indicating whether to perform data 
-				augmentation on the data.
+			- training: Boolean value.
 
 		Returns:
 			A tf.data.Dataset object.
@@ -46,21 +36,16 @@ class InputPipelineCreator(object):
 			self._decode_and_preprocess,
 			num_parallel_calls=tf.data.experimental.AUTOTUNE
 		)
-		dataset = dataset.cache()
 		
-		if shuffle_buffer_size is not None:
-			dataset = dataset.shuffle(shuffle_buffer_size)
-
-		dataset = dataset.batch(batch_size)
-
-		if num_steps_per_epoch is not None:
-			dataset = dataset.take(num_steps_per_epoch)
-		
-		if augmentation:
+		if training:
+			dataset = dataset.repeat().shuffle(1024).batch(batch_size)
 			dataset = dataset.map(
 				self._augment_batch,
 				num_parallel_calls=tf.data.experimental.AUTOTUNE
 			)
+		else:
+			dataset = dataset.cache()
+			dataset = dataset.batch(batch_size)
 
 		dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
 		
@@ -80,10 +65,10 @@ class InputPipelineCreator(object):
 		'''
 
 		def _flip_boxes(boxes):
-			ymin, xmin, ymax, xmax = tf.split(value=boxes, num_or_size_splits=4, axis=-1)
-			flipped_xmin = tf.subtract(1.0, xmax)
-			flipped_xmax = tf.subtract(1.0, xmin)
-			flipped_boxes = tf.concat([ymin, flipped_xmin, ymax, flipped_xmax], -1)
+			x_mins, y_mins, x_maxs, y_maxs = tf.split(value=boxes, num_or_size_splits=4, axis=-1)
+			flipped_x_mins = tf.subtract(1.0, x_maxs)
+			flipped_x_maxs = tf.subtract(1.0, x_mins)
+			flipped_boxes = tf.concat([flipped_x_mins, y_mins, flipped_x_maxs, y_maxs], -1)
 			return flipped_boxes
 
 		def _flip_image(image):
@@ -135,17 +120,20 @@ class InputPipelineCreator(object):
 		image_width_original = tf.cast(features['image/width'], tf.int32)
 		image_height_original = tf.cast(features['image/height'], tf.int32)
 
-		image = tf.io.decode_image(features['image/encoded'], dtype=tf.float32)
+		image = tf.io.decode_image(features['image/encoded'])
+		image = tf.cast(image, dtype=tf.float32)
 		image = tf.reshape(image, [image_height_original, image_width_original, 3])
-		image = self._pad_or_clip(image, self.image_shape)
+
+		new_height, new_width, _ = self.image_shape
+		image = tf.image.resize(image, [new_height, new_width])
 
 		classes = tf.one_hot(features['label/ids'].values + 1, self.num_classes + 1)
 		classes = self._pad_or_clip(classes, [self.max_num_objects, self.num_classes + 1])
 		
-		x_mins = features['label/x_mins'].values / tf.cast(self.image_shape[1], tf.float32)
-		y_mins = features['label/y_mins'].values / tf.cast(self.image_shape[0], tf.float32)
-		x_maxs = features['label/x_maxs'].values / tf.cast(self.image_shape[1], tf.float32)
-		y_maxs = features['label/y_maxs'].values / tf.cast(self.image_shape[0], tf.float32)
+		x_mins = features['label/x_mins'].values / tf.cast(image_width_original, tf.float32)
+		y_mins = features['label/y_mins'].values / tf.cast(image_height_original, tf.float32)
+		x_maxs = features['label/x_maxs'].values / tf.cast(image_width_original, tf.float32)
+		y_maxs = features['label/y_maxs'].values / tf.cast(image_height_original, tf.float32)
 
 		bboxes = tf.transpose(tf.stack([x_mins, y_mins, x_maxs, y_maxs]))
 		bboxes = self._pad_or_clip(bboxes, [self.max_num_objects, 4])

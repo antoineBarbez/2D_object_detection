@@ -47,10 +47,10 @@ class TargetGenerator(object):
 				overlap with the considered region. 
 		'''
 
-		# Remove padding gt_boxes
-		non_null_gt_boxes_inds = tf.reshape(tf.where(
-			tf.reduce_sum(gt_class_labels, -1) != 0.0), [-1])
-		gt_boxes = tf.gather(gt_boxes, non_null_gt_boxes_inds)
+		# Remove padding gt_boxes & gt_class_labels
+		non_padding_inds = tf.where(tf.reduce_sum(gt_class_labels, -1) != 0.0)
+		gt_boxes = tf.gather_nd(gt_boxes, non_padding_inds)
+		gt_class_labels = tf.gather_nd(gt_class_labels, non_padding_inds)
 
 		# Rescale gt_boxes to be in absolute coordnates
 		abs_gt_boxes = box_utils.to_absolute(gt_boxes, self._image_shape)

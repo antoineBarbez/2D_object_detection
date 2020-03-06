@@ -20,7 +20,11 @@ class _LayersOverride(object):
 		return getattr(tf.keras.layers, item)
 
 def preprocess_input(images):
-	return tf.keras.applications.imagenet_utils.preprocess_input(images, mode='tf')
+	# 'RGB'->'BGR'
+	images = images[..., ::-1]
+	
+	mean = tf.constant([103.939, 116.779, 123.68])
+	return images - mean
 
 def ResNet50FeatureExtractor(
 		kernel_regularizer=None,

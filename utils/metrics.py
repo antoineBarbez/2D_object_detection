@@ -1,12 +1,14 @@
 import tensorflow as tf
 
+import functools
+
 class AveragePrecision(tf.keras.metrics.Metric):
 	def __init__(self, iou_threshold, **kwargs):
 		super(AveragePrecision, self).__init__(**kwargs)
 
 		self.iou_threshold = iou_threshold
 
-		self.auc = tf.keras.metrics.AUC(num_thresholds=50, curve='PR')
+		self.auc = tf.keras.metrics.AUC(num_thresholds=51, curve='PR')
 
 	def reset_states(self):
 		self.auc.reset_states()
@@ -26,9 +28,12 @@ class AveragePrecision(tf.keras.metrics.Metric):
 		'''
 		batch_size = tf.shape(pred_boxes)[0]
 		for i in range(batch_size):
-			self.update_auc_state(gt_boxes[i], pred_boxes[i], pred_scores[i])
+			self.update_state_single_image(
+				gt_boxes=gt_boxes[i],
+				pred_boxes=pred_boxes[i],
+				pred_scores=pred_scores[i])
 
-	def update_auc_state(self, gt_boxes, pred_boxes, pred_scores):
+	def update_state_single_image(self, gt_boxes, pred_boxes, pred_scores):
 		'''
 		Args:
 			- gt_boxes: A tensor of shape [max_num_objects, 4] possibly zero padded 
@@ -38,6 +43,11 @@ class AveragePrecision(tf.keras.metrics.Metric):
 			- pred_scores: A tensor of shape [max_predictions] possibly zero padded 
 				representing the scores for each predicted box.
 		'''
+
+		# Remove padding gt_boxes
+		non_padding_inds = tf.where(tf.reduce_sum(gt_boxes, -1) != 0.0)
+		gt_boxes = tf.gather_nd(gt_boxes, non_padding_inds)
+
 		ious = iou(gt_boxes, pred_boxes, pairwise=True)
 		ious = tf.reduce_max(ious, axis=0)
 
@@ -45,6 +55,37 @@ class AveragePrecision(tf.keras.metrics.Metric):
 
 		self.auc.update_state(true_scores, pred_scores)
 
+class MeanAveragePrecision(tf.keras.metrics.Metric):
+	def __init__(self, num_classes, iou_threshold, **kwargs):
+		super(MeanAveragePrecision, self).__init__(**kwargs)
+		self.num_classes = num_classes 
+
+		self.aps = [AveragePrecision(iou_threshold) for _ in range(num_classes)]
+
+	def reset_states(self):
+		for average_precision in self.average_precisions:
+			average_precision.reset_states()
+
+	def result(self):
+		return functools.reduce(lambda x, y: x + y.result(), self.average_precisions) / float(self.num_classes)
+
+	def update_state(self, gt_boxes, gt_class_labels, pred_boxes, pred_scores):
+		'''
+		Args:
+			- gt_boxes: A tensor of shape [batch_size, max_num_objects, 4] possibly zero padded 
+				representing the ground-truth boxes.
+			- gt_class_labels: [batch_size, max_num_objects, num_classes] possibly zero padded 
+				representing the ground-truth class labels.
+			- pred_boxes: A tensor of shape [batch_size, max_predictions, 4] possibly zero padded 
+				representing predicted bounding-boxes.
+			- pred_scores: A tensor of shape [batch_size, max_predictions, num_classes] possibly zero padded 
+				representing the class scores for each predicted box.
+		'''
+		for i in range(self.num_classes):
+			self.average_precisions[i].update_state(
+				gt_boxes=tf.where(gt_class_labels[:, :, i] == 1.0, gt_boxes, tf.zeros_like(gt_boxes)),
+				pred_boxes=pred_boxes,
+				pred_scores=pred_scores[:, :, i])
 
 def area(boxes):
 	'''

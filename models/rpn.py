@@ -9,7 +9,7 @@ class RPN(ObjectDetectionModel):
 	def __init__(self,
 		image_shape,
 		window_size=3,
-		scales=[0.5, 1.0, 2.0],
+		scales=[0.25, 0.5, 1.0, 2.0],
 		aspect_ratios=[0.5, 1.0, 2.0],
 		base_anchor_shape=(160, 160),
 		name='region_proposal_network'):
