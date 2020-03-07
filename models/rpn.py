@@ -28,7 +28,7 @@ class RPN(ObjectDetectionModel):
 			image_shape=image_shape,
 			num_classes=1,
 			foreground_proportion=0.5,
-			foreground_iou_interval=(0.7, 1.0), 
+			foreground_iou_interval=(0.65, 1.0), 
 			background_iou_interval=(0.0, 0.3),
 			name=name)
 

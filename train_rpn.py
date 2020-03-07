@@ -3,7 +3,6 @@ import utils.images as image_utils
 import utils.metrics as metric_utils
 
 import argparse
-import datetime
 import os
 
 from PIL import Image
@@ -36,15 +35,20 @@ def parse_args():
 		type=str,
 		help='Path to the directory where to write training logs')
 	parser.add_argument(
+		'--save-dir',
+		required=True,
+		type=str,
+		help='Path to the directory where to store weights of the final model')
+	parser.add_argument(
 		'--checkpoints-dir',
 		required=True,
 		type=str,
-		help='Path to the directory where to store checkpoint weights')
+		help='Path to the directory where to store checkpoints')
 	parser.add_argument(
 		'--num-steps',
-		default=80000,
+		default=40000,
 		type=int,
-		help='Number of times to go through the data, default=80000')
+		help='Number of times to go through the data, default=70000')
 	parser.add_argument(
 		'--num-steps-per-epoch',
 		default=500,
@@ -52,15 +56,14 @@ def parse_args():
 		help='Number of steps to complete an epoch, default=500')
 	parser.add_argument(
 		'--batch-size',
-		default=4,
+		default=2,
 		type=int,
-		help='Size of the batches used to update parameters, default=4')
+		help='Size of the batches used to update parameters, default=2')
 	return parser.parse_args()
 
 def main():
 	num_classes = 7
 	image_shape = (375, 1242, 3)
-	max_num_objects = 200
 
 	args = parse_args()
 	filenames_train = [os.path.join(args.train_data_dir, f) for f in tf.io.gfile.listdir(args.train_data_dir)]
@@ -68,8 +71,7 @@ def main():
 
 	pipeline_creator = InputPipelineCreator(
 		num_classes=num_classes,
-		image_shape=image_shape,
-		max_num_objects=max_num_objects)
+		image_shape=image_shape)
 	dataset_train = pipeline_creator.create_input_pipeline(
 		filenames=filenames_train, 
 		batch_size=args.batch_size, 
@@ -78,37 +80,55 @@ def main():
 	
 	train_classification_loss = tf.keras.metrics.Mean(name='train_classification_loss')
 	train_regression_loss = tf.keras.metrics.Mean(name='train_regression_loss')
-	train_average_precision = metric_utils.AveragePrecision(0.5, name='train_ap_0.5')
+	train_average_precision_50 = metric_utils.AveragePrecision(0.5, name='train_ap_0.50')
+	train_average_precision_75 = metric_utils.AveragePrecision(0.75, name='train_ap_0.75')
 
 	valid_classification_loss = tf.keras.metrics.Mean(name='valid_classification_loss')
 	valid_regression_loss = tf.keras.metrics.Mean(name='valid_regression_loss')
-	valid_average_precision = metric_utils.AveragePrecision(0.5, name='valid_ap_0.5')
+	valid_average_precision_50 = metric_utils.AveragePrecision(0.5, name='valid_ap_0.50')
+	valid_average_precision_75 = metric_utils.AveragePrecision(0.75, name='valid_ap_0.75')
 
-	current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-	train_log_dir = os.path.join(args.logs_dir, current_time, 'rpn', 'train')
-	valid_log_dir = os.path.join(args.logs_dir, current_time, 'rpn', 'valid')
+	train_log_dir = os.path.join(args.logs_dir, 'rpn', 'train')
+	valid_log_dir = os.path.join(args.logs_dir, 'rpn', 'valid')
 	train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 	valid_summary_writer = tf.summary.create_file_writer(valid_log_dir)
 
-	learning_rate = tf.keras.optimizers.schedules.PiecewiseConstantDecay([50000], [0.001, 0.0001])
+	learning_rate = tf.keras.optimizers.schedules.PiecewiseConstantDecay([30000], [0.001, 0.0001])
 	optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9)
 
 	model = RPN(image_shape)
 
-	for step, (images, classes, boxes) in dataset_train.enumerate():
+	checkpoint = tf.train.Checkpoint(step=tf.Variable(0), optimizer=optimizer, model=model)
+	manager = tf.train.CheckpointManager(
+		checkpoint=checkpoint,
+		directory=os.path.join(args.checkpoints_dir, 'rpn'),
+		max_to_keep=3)
+
+	checkpoint.restore(manager.latest_checkpoint)
+	if manager.latest_checkpoint:
+		tf.print("Restored from {}".format(manager.latest_checkpoint))
+	else:
+		tf.print("Initializing from scratch.")
+
+	for images, classes, boxes in dataset_train:
+		checkpoint.step.assign_add(1)
+		step = int(checkpoint.step)
+		
 		cls_loss, reg_loss, pred_scores, pred_boxes = model.train_step(images, classes, boxes, optimizer)
 
 		train_classification_loss(cls_loss)
 		train_regression_loss(reg_loss)
-		train_average_precision(boxes, pred_boxes, pred_scores)
+		train_average_precision_50(boxes, pred_boxes, pred_scores)
+		train_average_precision_75(boxes, pred_boxes, pred_scores)
 
-		if (step + 1) % args.num_steps_per_epoch == 0:
-			epoch = (step + 1) // args.num_steps_per_epoch
+		if step % args.num_steps_per_epoch == 0:
+			epoch = step // args.num_steps_per_epoch
 
 			with train_summary_writer.as_default():
-				tf.summary.scalar('Losses/classification_loss', train_classification_loss.result(), step=step + 1)
-				tf.summary.scalar('Losses/regression_loss', train_regression_loss.result(), step=step + 1)
-				tf.summary.scalar('Metrics/average_precision', train_average_precision.result(), step=step + 1)
+				tf.summary.scalar('Losses/classification_loss', train_classification_loss.result(), step=step)
+				tf.summary.scalar('Losses/regression_loss', train_regression_loss.result(), step=step)
+				tf.summary.scalar('Metrics/average_precision_0.50', train_average_precision_50.result(), step=step)
+				tf.summary.scalar('Metrics/average_precision_0.75', train_average_precision_75.result(), step=step)
 
 			with valid_summary_writer.as_default():
 				for test_step, (images, classes, boxes) in dataset_valid.enumerate():
@@ -116,9 +136,10 @@ def main():
 
 					valid_classification_loss(cls_loss)
 					valid_regression_loss(reg_loss) 
-					valid_average_precision(boxes, pred_boxes, pred_scores)
+					valid_average_precision_50(boxes, pred_boxes, pred_scores)
+					valid_average_precision_75(boxes, pred_boxes, pred_scores)
 
-					if test_step == 2:
+					if test_step == 13:
 						# Add ground-truth boxes and anchors to summary only once 
 						if epoch == 1:
 							image_gt_boxes = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
@@ -142,22 +163,30 @@ def main():
 							image_anchors_background.close()
 
 						# Add predictions to summary every 5 epochs
-						if epoch % 5 == 0:
-							image_predictions = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-							rois = tf.gather_nd(pred_boxes, tf.where(pred_scores > 0.5))
-							image_utils.draw_predictions_on_image(image_predictions, rois, relative=True)
-							tf.summary.image('Predictions', image_utils.to_tensor(image_predictions), step=step + 1)
-							image_predictions.close()
+						if epoch % 2 == 0:
+							image_predictions_50 = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
+							rois_50 = tf.gather_nd(pred_boxes, tf.where(pred_scores > 0.5))
+							image_utils.draw_predictions_on_image(image_predictions_50, rois_50, relative=True)
+							tf.summary.image('Predictions/pred_0.50', image_utils.to_tensor(image_predictions_50), step=step)
+							image_predictions_50.close()
 
-				tf.summary.scalar('Losses/classification_loss', valid_classification_loss.result(), step=step + 1)
-				tf.summary.scalar('Losses/regression_loss', valid_regression_loss.result(), step=step + 1)
-				tf.summary.scalar('Metrics/average_precision', valid_average_precision.result(), step=step + 1)
+							image_predictions_75 = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
+							rois_75 = tf.gather_nd(pred_boxes, tf.where(pred_scores > 0.75))
+							image_utils.draw_predictions_on_image(image_predictions_75, rois_75, relative=True)
+							tf.summary.image('Predictions/pred_0.75', image_utils.to_tensor(image_predictions_75), step=step)
+							image_predictions_75.close()
+
+				tf.summary.scalar('Losses/classification_loss', valid_classification_loss.result(), step=step)
+				tf.summary.scalar('Losses/regression_loss', valid_regression_loss.result(), step=step)
+				tf.summary.scalar('Metrics/average_precision_0.50', valid_average_precision_50.result(), step=step)
+				tf.summary.scalar('Metrics/average_precision_0.75', valid_average_precision_75.result(), step=step)
 
 			# Print metrics of the epoch
 			template = 'Epoch {0}/{1}: \n'
-			template += '\tCls Loss --> Train: {2:.2f}, Valid: {3:.2f}\n'
-			template += '\tReg Loss --> Train: {4:.2f}, Valid: {5:.2f}\n'
-			template += '\tAP       --> Train: {6:.2f}, Valid: {7:.2f}\n'
+			template += '\tCls Loss       --> Train: {2:.2f}, Valid: {3:.2f}\n'
+			template += '\tReg Loss       --> Train: {4:.2f}, Valid: {5:.2f}\n'
+			template += '\tAP at IoU=.50  --> Train: {6:.2f}, Valid: {7:.2f}\n'
+			template += '\tAP at IoU=.75  --> Train: {8:.2f}, Valid: {9:.2f}\n'
 
 			tf.print(template.format(
 				epoch,
@@ -166,22 +195,29 @@ def main():
 				valid_classification_loss.result(),
 				train_regression_loss.result(),
 				valid_regression_loss.result(),
-				train_average_precision.result(),
-				valid_average_precision.result()))
+				train_average_precision_50.result(),
+				valid_average_precision_50.result(),
+				train_average_precision_75.result(),
+				valid_average_precision_75.result()))
 
 			# Reset metric objects
 			train_classification_loss.reset_states()
 			train_regression_loss.reset_states()
-			train_average_precision.reset_states()
+			train_average_precision_50.reset_states()
+			train_average_precision_75.reset_states()
 			valid_classification_loss.reset_states()
 			valid_regression_loss.reset_states()
-			valid_average_precision.reset_states()
+			valid_average_precision_50.reset_states()
+			valid_average_precision_75.reset_states()
 
-			# Save model checkpoint every 10 epochs
-			if epoch % 10 == 0:
-				model.save_weights(os.path.join(args.checkpoints_dir, 'checkpoint_{}'.format(epoch),'weights'), save_format='tf')
+			# Save checkpoint every 5 epochs
+			if epoch % 5 == 0:
+				save_path = manager.save()
+				tf.print("Saved checkpoint for epoch {}: {}".format(epoch, save_path))
 
-		if (step + 1) == args.num_steps:
+		# Save model's weights when training is finished
+		if step == args.num_steps:
+			model.save_weights(os.path.join(args.save_dir,'weights'), save_format='tf')
 			break
 
 if __name__ == "__main__":
