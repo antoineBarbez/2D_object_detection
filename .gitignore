@@ -3,6 +3,7 @@
 *.tfrecord
 *.pyc
 
+saved_models/
 checkpoints/
 logs/
 commands.txt
