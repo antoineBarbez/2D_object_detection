@@ -44,13 +44,17 @@ class AveragePrecision(tf.keras.metrics.Metric):
 				representing the scores for each predicted box.
 		'''
 
-		# Remove padding gt_boxes
-		non_padding_inds = tf.where(tf.reduce_sum(gt_boxes, -1) != 0.0)
-		gt_boxes = tf.gather_nd(gt_boxes, non_padding_inds)
+		# Remove padding boxes and scores
+		gt_non_padding_inds = tf.where(tf.reduce_sum(gt_boxes, -1) != 0.0)
+		gt_boxes = tf.gather_nd(gt_boxes, gt_non_padding_inds)
 
+		pred_non_padding_inds = tf.where(tf.reduce_sum(pred_boxes, -1) != 0.0)
+		pred_boxes = tf.gather_nd(pred_boxes, pred_non_padding_inds)
+		pred_scores = tf.gather_nd(pred_scores, pred_non_padding_inds)
+
+		# Compute true scores
 		ious = iou(gt_boxes, pred_boxes, pairwise=True)
 		ious = tf.reduce_max(ious, axis=0)
-
 		true_scores = tf.cast(ious > self.iou_threshold, dtype=tf.float32)
 
 		self.auc.update_state(true_scores, pred_scores)
@@ -69,7 +73,7 @@ class MeanAveragePrecision(tf.keras.metrics.Metric):
 	def result(self):
 		return functools.reduce(lambda x, y: x + y.result(), self.average_precisions) / float(self.num_classes)
 
-	def update_state(self, gt_boxes, gt_class_labels, pred_boxes, pred_scores):
+	def update_state(self, gt_boxes, gt_class_labels, pred_boxes, pred_scores, pred_classes):
 		'''
 		Args:
 			- gt_boxes: A tensor of shape [batch_size, max_num_objects, 4] possibly zero padded 
@@ -78,14 +82,17 @@ class MeanAveragePrecision(tf.keras.metrics.Metric):
 				representing the ground-truth class labels.
 			- pred_boxes: A tensor of shape [batch_size, max_predictions, 4] possibly zero padded 
 				representing predicted bounding-boxes.
-			- pred_scores: A tensor of shape [batch_size, max_predictions, num_classes] possibly zero padded 
-				representing the class scores for each predicted box.
+			- pred_scores: A tensor of shape [batch_size, max_predictions] possibly zero padded 
+				representing the class score for each predicted box.
+			- pred_classes: A tensor of shape [batch_size, max_predictions] possibly zero padded 
+				representing the class indice for each predicted box.
 		'''
 		for i in range(self.num_classes):
+			inds_to_keep = tf.where(pred_classes == i)
 			self.average_precisions[i].update_state(
 				gt_boxes=tf.where(gt_class_labels[:, :, i] == 1.0, gt_boxes, tf.zeros_like(gt_boxes)),
-				pred_boxes=pred_boxes,
-				pred_scores=pred_scores[:, :, i])
+				pred_boxes=tf.gather_nd(pred_boxes, inds_to_keep),
+				pred_scores=tf.gather_nd(pred_scores, inds_to_keep))
 
 def area(boxes):
 	'''

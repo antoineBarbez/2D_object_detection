@@ -37,7 +37,7 @@ class TargetGenerator(object):
 				ground-truth bounding boxes possibly passed with zeros.
 			- regions: A tensor of shape [num_regions, 4] representing the reference regions.
 				This corresponds to the anchors for the RPN and to the RoIs for the
-				Faster-RCNN.
+				Fast-RCNN.
 
 		Returns:
 			- target_class_labels: A tensor of shape [num_regions, num_classes + 1] representing the target
