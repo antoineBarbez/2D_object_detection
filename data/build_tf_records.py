@@ -80,7 +80,7 @@ def create_tf_example(image_file, label_file):
 	x_maxs = []
 	y_maxs = []
 	for obj in parse_label_file(label_file):
-		if obj['type'] in kitti_classes.names:
+		if obj['type'] in kitti_classes.class_names:
 			ids.append(name_to_id_map[obj['type']])
 			x_mins.append(obj['bbox'][0])
 			y_mins.append(obj['bbox'][1])

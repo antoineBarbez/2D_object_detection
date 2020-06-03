@@ -21,14 +21,7 @@ class TargetGenerator(object):
 		self._min_f, self._max_f = foreground_iou_interval
 		self._min_b, self._max_b = background_iou_interval
 
-	def generate_targets_batch(self, gt_class_labels, gt_boxes, regions):
-
-		return tf.map_fn(
-			fn=lambda x: self._generate_targets(x[0], x[1], regions),
-			elems=(gt_class_labels, gt_boxes),
-			dtype=(tf.float32, tf.float32))
-
-	def _generate_targets(self, gt_class_labels, gt_boxes, regions):
+	def generate_targets(self, gt_class_labels, gt_boxes, regions):
 		'''
 		Args:
 			- gt_class_labels: A tensor of shape [max_num_objects, num_classes + 1] representing the 

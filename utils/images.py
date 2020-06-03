@@ -46,7 +46,7 @@ def draw_box_on_image(image, box, label=None, relative=False, color='red', thick
 			fill="black",
 			font=font)
 
-def draw_predictions_on_image(image, boxes, class_scores=None, 
+def draw_predictions_on_image(image, boxes, scores=None, class_indices=None, 
 	class_names=None, relative=False, default_color='red', thickness=2):
 	'''
 	Draw predicted boxes with scores on image.
@@ -54,27 +54,33 @@ def draw_predictions_on_image(image, boxes, class_scores=None,
 	Args:
 		- image: A PIL Image object.
 		- boxes: A tensor of shape [num_pred, 4].
-		- class_scores: A tensor of shape [num_pred, num_classes].
-		- class_names: A list of size num_classes.
+		- scores: A tensor of shape [num_pred].
+		- class_indices: A tensor of shape [num_pred]
+		- class_names: A list containing the name of the classes.
 		- relative: Whether the boxes are in relative or absolute coordinates.
 		- default_color: (Default: 'red') Color to use for boxes if class_scores and 
 			class_names are not specified.
 		- thickness: (Default: 2px) Thickness of the line of the bounding box.
 	'''
-	if (class_scores is not None) & (class_names is not None):
+	if (class_names is not None) & (class_indices is not None):
 		color_palette = sns.color_palette("hls", len(class_names))
-		class_indices = tf.math.argmax(class_scores, -1)
+		color_palette = [tuple(int(channel * 255) for channel in color) for color in color_palette]
 
 	for i, box in enumerate(boxes):
-		if (class_scores is not None) & (class_names is not None):
+		label = None
+		color = default_color
+
+		if (class_names is not None) & (class_indices is not None):
 			class_indice = class_indices[i]
-			label = "{0}: {1:.2f}".format(
-				class_names[class_indice],
-				class_scores[i, class_indice])
+			label = class_names[class_indice]
 			color = color_palette[class_indice]
-		else:
-			label = None
-			color = default_color
+		
+		if scores is not None:
+			if label is None:
+				label = ""
+			else:
+				label += ": "
+			label += "{:.0f}%".format(scores[i] * 100)
 		
 		draw_box_on_image(
 			image=image, 

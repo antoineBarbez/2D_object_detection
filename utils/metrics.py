@@ -45,10 +45,10 @@ class AveragePrecision(tf.keras.metrics.Metric):
 		'''
 
 		# Remove padding boxes and scores
-		gt_non_padding_inds = tf.where(tf.reduce_sum(gt_boxes, -1) != 0.0)
+		gt_non_padding_inds = tf.where(tf.reduce_sum(gt_boxes, -1) != 0.0, name='where_ap_1')
 		gt_boxes = tf.gather_nd(gt_boxes, gt_non_padding_inds)
 
-		pred_non_padding_inds = tf.where(tf.reduce_sum(pred_boxes, -1) != 0.0)
+		pred_non_padding_inds = tf.where(tf.reduce_sum(pred_boxes, -1) != 0.0, name='where_ap_2')
 		pred_boxes = tf.gather_nd(pred_boxes, pred_non_padding_inds)
 		pred_scores = tf.gather_nd(pred_scores, pred_non_padding_inds)
 
@@ -64,14 +64,18 @@ class MeanAveragePrecision(tf.keras.metrics.Metric):
 		super(MeanAveragePrecision, self).__init__(**kwargs)
 		self.num_classes = num_classes 
 
-		self.aps = [AveragePrecision(iou_threshold) for _ in range(num_classes)]
+		self.average_precisions = [AveragePrecision(iou_threshold) for _ in range(num_classes)]
 
 	def reset_states(self):
 		for average_precision in self.average_precisions:
 			average_precision.reset_states()
 
 	def result(self):
-		return functools.reduce(lambda x, y: x + y.result(), self.average_precisions) / float(self.num_classes)
+		sum_ap = 0.0
+		for average_precision in self.average_precisions:
+			sum_ap += average_precision.result()
+
+		return sum_ap / float(self.num_classes)
 
 	def update_state(self, gt_boxes, gt_class_labels, pred_boxes, pred_scores, pred_classes):
 		'''
@@ -88,11 +92,23 @@ class MeanAveragePrecision(tf.keras.metrics.Metric):
 				representing the class indice for each predicted box.
 		'''
 		for i in range(self.num_classes):
-			inds_to_keep = tf.where(pred_classes == i)
 			self.average_precisions[i].update_state(
-				gt_boxes=tf.where(gt_class_labels[:, :, i] == 1.0, gt_boxes, tf.zeros_like(gt_boxes)),
-				pred_boxes=tf.gather_nd(pred_boxes, inds_to_keep),
-				pred_scores=tf.gather_nd(pred_scores, inds_to_keep))
+				gt_boxes=tf.where(
+					condition=tf.tile(
+						input=tf.expand_dims(gt_class_labels[:, :, i] == 1.0, -1),
+						multiples=[1, 1, 4]),
+					x=gt_boxes,
+					y=0.0),
+				pred_boxes=tf.where(
+					condition=tf.tile(
+						input=tf.expand_dims(pred_classes == i, -1),
+						multiples=[1, 1, 4]),
+					x=pred_boxes,
+					y=0.0),
+				pred_scores=tf.where(
+					condition=pred_classes == i,
+					x=pred_scores,
+					y=0.0))
 
 def area(boxes):
 	'''

@@ -47,7 +47,7 @@ def encode(boxes, reference_boxes):
 	Args:
 		- boxes: A tensor of shape [d1, ..., dN, num_boxes, 4] representing box
 			coordinates encoded as: [x_min, y_min, x_max, y_max].
-		- reference_boxes: A tensor with same type and shape as boxes
+		- reference_boxes: A tensor broadcastabe with boxes
 			representing the reference box coordinates.
 
 	Returns:

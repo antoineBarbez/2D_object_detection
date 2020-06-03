@@ -6,7 +6,7 @@ class ClassificationLoss(tf.keras.losses.Loss):
 
 		self._cce = tf.keras.losses.CategoricalCrossentropy()
 
-	def call(self, target_class_labels, pred_class_scores):
+	def __call__(self, target_class_labels, pred_class_scores):
 		'''
 		Args:
 			- target_class_labels: A tensor of shape [batch_size, num_samples_per_image, num_classes + 1] 
@@ -22,7 +22,7 @@ class RegressionLoss(tf.keras.losses.Loss):
 
 		self._huber = tf.keras.losses.Huber(reduction=tf.keras.losses.Reduction.NONE)
 
-	def call(self, target_class_labels, target_boxes_encoded, pred_boxes_encoded):
+	def __call__(self, target_class_labels, target_boxes_encoded, pred_boxes_encoded):
 		'''
 		Args:
 			- target_class_labels: A tensor of shape [batch_size, num_samples_per_image, num_classes + 1] 

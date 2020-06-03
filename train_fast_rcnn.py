@@ -8,6 +8,7 @@ import os
 from PIL import Image
 from data.input_pipeline import InputPipelineCreator
 from data.kitti_classes import class_names
+from models.fast_rcnn import FastRCNN
 from models.rpn import RPN
 
 assert tf.__version__.startswith('2')
@@ -49,17 +50,17 @@ def parse_args():
 		'--num-steps',
 		default=50000,
 		type=int,
-		help='Number of parameters update, default=50000')
+		help='Number of parameters update, default=70000')
 	parser.add_argument(
 		'--num-steps-per-epoch',
-		default=500,
+		default=2,
 		type=int,
 		help='Number of steps to complete an epoch, default=500')
 	parser.add_argument(
 		'--batch-size',
-		default=4,
+		default=2,
 		type=int,
-		help='Size of the batches used to update parameters, default=4')
+		help='Size of the batches used to update parameters, default=2')
 	parser.add_argument(
 		'--learning-rates',
 		nargs='+',
@@ -69,9 +70,9 @@ def parse_args():
 	parser.add_argument(
 		'--decay-steps',
 		nargs='*',
-		default=[30000],
+		default=[40000],
 		type=int,
-		help='List of steps at which we decay the learning rate, default=[30000]')
+		help='List of steps at which we decay the learning rate, default=[40000]')
 	return parser.parse_args()
 
 def main():
@@ -90,19 +91,20 @@ def main():
 		batch_size=args.batch_size, 
 		training=True)
 	dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid)
+	dataset_valid = dataset_valid.take(4)
 	
 	train_classification_loss = tf.keras.metrics.Mean(name='train_classification_loss')
 	train_regression_loss = tf.keras.metrics.Mean(name='train_regression_loss')
-	train_average_precision_50 = metric_utils.AveragePrecision(0.5, name='train_AP@IoU=.50')
-	train_average_precision_75 = metric_utils.AveragePrecision(0.75, name='train_AP@IoU=.75')
+	train_map_50 = metric_utils.MeanAveragePrecision(num_classes, 0.5, name='train_mAP@IoU=.50')
+	train_map_75 = metric_utils.MeanAveragePrecision(num_classes, 0.75, name='train_mAP@IoU=.75')
 
 	valid_classification_loss = tf.keras.metrics.Mean(name='valid_classification_loss')
 	valid_regression_loss = tf.keras.metrics.Mean(name='valid_regression_loss')
-	valid_average_precision_50 = metric_utils.AveragePrecision(0.5, name='valid_AP@IoU=.50')
-	valid_average_precision_75 = metric_utils.AveragePrecision(0.75, name='valid_AP@IoU=.75')
+	valid_map_50 = metric_utils.MeanAveragePrecision(num_classes, 0.5, name='valid_mAP@IoU=.50')
+	valid_map_75 = metric_utils.MeanAveragePrecision(num_classes, 0.75, name='valid_mAP@IoU=.75')
 
-	train_log_dir = os.path.join(args.logs_dir, 'rpn', 'train')
-	valid_log_dir = os.path.join(args.logs_dir, 'rpn', 'valid')
+	train_log_dir = os.path.join(args.logs_dir, 'fast-rcnn', 'train')
+	valid_log_dir = os.path.join(args.logs_dir, 'fast-rcnn', 'valid')
 	train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 	valid_summary_writer = tf.summary.create_file_writer(valid_log_dir)
 
@@ -111,12 +113,17 @@ def main():
 		values=args.learning_rates)
 	optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9)
 
-	model = RPN(image_shape)
+	fast_rcnn = FastRCNN(image_shape, num_classes)
+	rpn = RPN(image_shape)
+	#rpn.load_weights(os.path.join(args.save_dir, 'rpn', 'weights'))
 
-	checkpoint = tf.train.Checkpoint(step=tf.Variable(0), optimizer=optimizer, model=model)
+	rpn.detector.load_weights(os.path.join(args.save_dir, 'rpn', 'detector', 'weights'))
+	rpn.feature_extractor.load_weights(os.path.join(args.save_dir, 'rpn', 'feature_extractor', 'weights'))
+
+	checkpoint = tf.train.Checkpoint(step=tf.Variable(0), optimizer=optimizer, fast_rcnn=fast_rcnn)
 	manager = tf.train.CheckpointManager(
 		checkpoint=checkpoint,
-		directory=os.path.join(args.checkpoints_dir, 'rpn'),
+		directory=os.path.join(args.checkpoints_dir, 'fast-rcnn'),
 		max_to_keep=3)
 
 	checkpoint.restore(manager.latest_checkpoint)
@@ -125,16 +132,19 @@ def main():
 	else:
 		tf.print("Initializing from scratch.")
 
-	for images, classes, boxes in dataset_train:
+	for images, gt_classes, gt_boxes in dataset_train:
 		checkpoint.step.assign_add(1)
 		step = int(checkpoint.step)
+
+		rois, _ = rpn.predict(images, True)
 		
-		cls_loss, reg_loss, pred_boxes, pred_scores = model.train_step(images, classes, boxes, optimizer, 256)
+		(cls_loss, reg_loss, 
+		 pred_boxes, pred_scores, pred_classes) = fast_rcnn.train_step(images, rois, gt_classes, gt_boxes, optimizer, 64)
 
 		train_classification_loss(cls_loss)
 		train_regression_loss(reg_loss)
-		train_average_precision_50(boxes, pred_boxes, pred_scores)
-		train_average_precision_75(boxes, pred_boxes, pred_scores)
+		train_map_50(gt_boxes, gt_classes, pred_boxes, pred_scores, pred_classes)
+		train_map_75(gt_boxes, gt_classes, pred_boxes, pred_scores, pred_classes)
 
 		if step % args.num_steps_per_epoch == 0:
 			epoch = step // args.num_steps_per_epoch
@@ -142,68 +152,74 @@ def main():
 			with train_summary_writer.as_default():
 				tf.summary.scalar('Losses/classification_loss', train_classification_loss.result(), step=step)
 				tf.summary.scalar('Losses/regression_loss', train_regression_loss.result(), step=step)
-				tf.summary.scalar('Metrics/AP@IoU=.50', train_average_precision_50.result(), step=step)
-				tf.summary.scalar('Metrics/AP@IoU=.75', train_average_precision_75.result(), step=step)
+				tf.summary.scalar('Metrics/mAP@IoU=.50', train_map_50.result(), step=step)
+				tf.summary.scalar('Metrics/mAP@IoU=.75', train_map_75.result(), step=step)
 
 			with valid_summary_writer.as_default():
-				for test_step, (images, classes, boxes) in dataset_valid.enumerate():
+				for test_step, (images, gt_classes, gt_boxes) in dataset_valid.enumerate():
+					rois, _ = rpn.predict(images, False)
+
 					(cls_loss, reg_loss, 
-					 pred_boxes, pred_scores, 
-					 foreground_anchors, background_anchors) = model.test_step(images, classes, boxes, 256)
+					 pred_boxes, pred_scores, pred_classes, 
+					 foreground_rois, background_rois) = fast_rcnn.test_step(images, rois, gt_classes, gt_boxes, 64)
 
 					valid_classification_loss(cls_loss)
 					valid_regression_loss(reg_loss) 
-					valid_average_precision_50(boxes, pred_boxes, pred_scores)
-					valid_average_precision_75(boxes, pred_boxes, pred_scores)
+					valid_map_50(gt_boxes, gt_classes, pred_boxes, pred_scores, pred_classes)
+					valid_map_75(gt_boxes, gt_classes, pred_boxes, pred_scores, pred_classes)
 
 					if test_step == 0:
-						# Add ground-truth boxes and anchors to summary only once 
+						# Add ground-truth boxes and RoIs to summary only once 
 						if epoch == 1:
 							image_gt_boxes = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-							image_utils.draw_predictions_on_image(image_gt_boxes, boxes[0], relative=True)
+							image_utils.draw_predictions_on_image(image_gt_boxes, gt_boxes[0],
+								class_indices=tf.math.argmax(gt_classes[0, :, 1:], -1), class_names=class_names, relative=True)
 							tf.summary.image('Ground-truth', image_utils.to_tensor(image_gt_boxes), step=0)
 							image_gt_boxes.close()
 
-							image_anchors_resume = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-							image_utils.draw_anchors_on_image(image_anchors_resume, model.detector.anchors, 12)
-							tf.summary.image('Anchors/resume', image_utils.to_tensor(image_anchors_resume), step=0)
-							image_anchors_resume.close()
+							image_rois_foreground = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
+							image_utils.draw_predictions_on_image(image_rois_foreground, foreground_rois,
+								relative=False, default_color='red')
+							tf.summary.image('RoIs/foreground', image_utils.to_tensor(image_rois_foreground), step=0)
+							image_rois_foreground.close()
 
-							image_anchors_foreground = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-							image_utils.draw_predictions_on_image(image_anchors_foreground, foreground_anchors, relative=False)
-							tf.summary.image('Anchors/foreground', image_utils.to_tensor(image_anchors_foreground), step=0)
-							image_anchors_foreground.close()
-
-							image_anchors_background = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-							image_utils.draw_predictions_on_image(image_anchors_background, background_anchors, relative=False)
-							tf.summary.image('Anchors/background', image_utils.to_tensor(image_anchors_background), step=0)
-							image_anchors_background.close()
+							image_rois_background = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
+							image_utils.draw_predictions_on_image(image_rois_background, background_rois,
+								relative=False, default_color='green')
+							tf.summary.image('RoIs/background', image_utils.to_tensor(image_rois_background), step=0)
+							image_rois_background.close()
 
 						# Add predictions to summary every 5 epochs
 						if epoch % 5 == 0:
 							image_predictions_50 = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-							rois_50 = tf.gather_nd(pred_boxes, tf.where(pred_scores > 0.5))
-							image_utils.draw_predictions_on_image(image_predictions_50, rois_50, relative=True)
+							pred_boxes_50 = tf.gather_nd(pred_boxes, tf.where(pred_scores > 0.5))
+							pred_scores_50 = tf.gather_nd(pred_scores, tf.where(pred_scores > 0.5))
+							pred_classes_50 = tf.gather_nd(pred_scores, tf.where(pred_scores > 0.5))
+							image_utils.draw_predictions_on_image(image_predictions_50, pred_boxes_50, 
+								pred_scores_50, pred_classes_50, class_names, relative=True)
 							tf.summary.image('Predictions/pred@score=.50', image_utils.to_tensor(image_predictions_50), step=step)
 							image_predictions_50.close()
 
 							image_predictions_75 = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-							rois_75 = tf.gather_nd(pred_boxes, tf.where(pred_scores > 0.75))
-							image_utils.draw_predictions_on_image(image_predictions_75, rois_75, relative=True)
+							pred_boxes_75 = tf.gather_nd(pred_boxes, tf.where(pred_scores > 0.75))
+							pred_scores_75 = tf.gather_nd(pred_scores, tf.where(pred_scores > 0.75))
+							pred_classes_75 = tf.gather_nd(pred_scores, tf.where(pred_scores > 0.75))
+							image_utils.draw_predictions_on_image(image_predictions_75, pred_boxes_75, 
+								pred_scores_75, pred_classes_75, class_names, relative=True)
 							tf.summary.image('Predictions/pred@score=.75', image_utils.to_tensor(image_predictions_75), step=step)
 							image_predictions_75.close()
 
 				tf.summary.scalar('Losses/classification_loss', valid_classification_loss.result(), step=step)
 				tf.summary.scalar('Losses/regression_loss', valid_regression_loss.result(), step=step)
-				tf.summary.scalar('Metrics/AP@IoU=.50', valid_average_precision_50.result(), step=step)
-				tf.summary.scalar('Metrics/AP@IoU=.75', valid_average_precision_75.result(), step=step)
+				tf.summary.scalar('Metrics/mAP@IoU=.50', valid_map_50.result(), step=step)
+				tf.summary.scalar('Metrics/mAP@IoU=.75', valid_map_75.result(), step=step)
 
 			# Print metrics of the epoch
 			template = 'Epoch {}/{}: \n'
-			template += '\tCls Loss      --> Train: {:.2f}, Valid: {:.2f}\n'
-			template += '\tReg Loss      --> Train: {:.2f}, Valid: {:.2f}\n'
-			template += '\tAP at IoU=.50 --> Train: {:.2f}, Valid: {:.2f}\n'
-			template += '\tAP at IoU=.75 --> Train: {:.2f}, Valid: {:.2f}\n'
+			template += '\tCls Loss       --> Train: {:.2f}, Valid: {:.2f}\n'
+			template += '\tReg Loss       --> Train: {:.2f}, Valid: {:.2f}\n'
+			template += '\tmAP at IoU=.50 --> Train: {:.2f}, Valid: {:.2f}\n'
+			template += '\tmAP at IoU=.75 --> Train: {:.2f}, Valid: {:.2f}\n'
 
 			tf.print(template.format(
 				epoch,
@@ -212,20 +228,20 @@ def main():
 				valid_classification_loss.result(),
 				train_regression_loss.result(),
 				valid_regression_loss.result(),
-				train_average_precision_50.result(),
-				valid_average_precision_50.result(),
-				train_average_precision_75.result(),
-				valid_average_precision_75.result()))
+				train_map_50.result(),
+				valid_map_50.result(),
+				train_map_75.result(),
+				valid_map_75.result()))
 
 			# Reset metric objects
 			train_classification_loss.reset_states()
 			train_regression_loss.reset_states()
-			train_average_precision_50.reset_states()
-			train_average_precision_75.reset_states()
+			train_map_50.reset_states()
+			train_map_75.reset_states()
 			valid_classification_loss.reset_states()
 			valid_regression_loss.reset_states()
-			valid_average_precision_50.reset_states()
-			valid_average_precision_75.reset_states()
+			valid_map_50.reset_states()
+			valid_map_75.reset_states()
 
 			# Save checkpoint every 5 epochs
 			if epoch % 5 == 0:
@@ -234,9 +250,8 @@ def main():
 
 		# Save model's weights when training is finished
 		if step == args.num_steps:
-			model.save_weights(os.path.join(args.save_dir, 'rpn', 'weights'), save_format='tf')
+			model.save_weights(os.path.join(args.save_dir, 'fast-rcnn', 'weights'), save_format='tf')
 			break
 
 if __name__ == "__main__":
 	main()
-

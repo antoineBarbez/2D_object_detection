@@ -1,20 +1,6 @@
 import tensorflow as tf
 
-def sample_batch(self,
-	target_class_labels,
-	target_boxes_encoded,
-	pred_class_scores,
-	pred_boxes_encoded,
-	regions,
-	num_samples_per_image,
-	foreground_proportion):
-
-	return tf.map_fn(
-	 	fn=lambda x: self._sample_image(x[0], x[1], x[2], x[3], regions, num_samples_per_image, foreground_proportion),
-	 	elems=(target_class_labels, target_boxes_encoded, pred_class_scores, pred_boxes_encoded),
-	 	dtype=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32))
-
-def sample_image(self,
+def sample_image(
 	target_class_labels,
 	target_boxes_encoded,
 	pred_class_scores,
@@ -32,7 +18,7 @@ def sample_image(self,
 		- pred_class_scores: Output of the classification head. A tensor of shape 
 			[num_regions, num_classes + 1] representing classification scores.
 		- pred_boxes_encoded: Output of the regression head. A tensor of shape
-			[num_regions, num_classes + 1, 4] representing encoded predicted box coordinates.
+			[num_regions, num_classes, 4] representing encoded predicted box coordinates.
 		- num_samples: Number of examples (regions) to sample per image.
 		- foreground_proportion: Maximum proportion of foreground vs background  
 			examples to sample in each minibatch. This parameter is set to 0.5 for

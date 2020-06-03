@@ -2,7 +2,7 @@ import tensorflow as tf
 
 from abc import abstractmethod 
 
-class Detector(tf.keras.Model):
+class AbstractDetector(tf.keras.Model):
 	'''
 	Abstract base class for object detectors
 		
@@ -10,15 +10,13 @@ class Detector(tf.keras.Model):
 	i.e., the output of a feature extractor.
 	'''
 	def __init__(self, **kwargs):
-		super(Detector, self).__init__(**kwargs)
+		super(AbstractDetector, self).__init__(**kwargs)
 	
 	@abstractmethod
-	def call(self, feature_maps, training, **kwargs):
+	def call(self, feature_maps, **kwargs):
 		'''
 		Args:
 			- feature_maps: Output of the feature extractor.
-			- training: A boolean indicating whether the training version of the
-				computation graph should be constructed.
 
 		Returns:
 			- regions: Reference boxes to be used for decoding the output of the regression head.

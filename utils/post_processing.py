@@ -11,7 +11,7 @@ def postprocess_output(
 		iou_threshold):
 		'''
 		Args:
-			- regions: A tensor of shape [num_regions, 4] representing the reference boxes
+			- regions: A tensor of shape [batch_size, num_regions, 4] representing the reference boxes
 				to be used for decoding predicted boxes.
 			- image_shape: Shape of the image to be used for clipping and normalization.
 			- pred_class_scores: Output of the classification head. A tensor of shape 
@@ -32,10 +32,13 @@ def postprocess_output(
 			- num_valid_detections: A [batch_size] int32 tensor indicating the number of valid 
 				detections per batch item. The rest of the entries are zero paddings.
 		'''
-		# Decode predicted boxes
+		# Tile regions to be broadcastable with pred_boxes_encoded for decoding
 		num_classes = tf.shape(pred_boxes_encoded)[2]
-		regions = tf.expand_dims(regions, 1)
-		regions = tf.tile(regions, [1, num_classes, 1])
+		regions = tf.expand_dims(regions, -2)
+		multiples = tf.one_hot(tf.rank(regions) - 2, tf.rank(regions), on_value=num_classes, off_value=1, dtype=tf.int32)
+		regions = tf.tile(regions, multiples)
+
+		# Decode predicted boxes
 		pred_boxes = box_utils.decode(pred_boxes_encoded, regions)
 
 		# Normalize predicted boxes
