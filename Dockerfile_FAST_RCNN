@@ -1,5 +1,5 @@
 # Specifies base image and tag
-FROM gcr.io/deeplearning-platform-release/tf2-gpu.2-0
+FROM gcr.io/deeplearning-platform-release/tf2-gpu.2-2
 WORKDIR /root
 
 # Installs additional packages
@@ -9,7 +9,7 @@ RUN pip install seaborn
 ENV PYTHONPATH "${PYTHONPATH}:/root"
 
 # Copy the code to the docker image.
-COPY train_rpn.py /root/train_rpn.py
+COPY train_fast_rcnn.py /root/train_fast_rcnn.py
 
 RUN mkdir -p /root/data
 COPY data/__init__.py /root/data/__init__.py
@@ -20,4 +20,4 @@ COPY models /root/models
 COPY utils /root/utils
 
 # Sets up the entry point to invoke the trainer.
-ENTRYPOINT ["python3", "train_rpn.py"]
+ENTRYPOINT ["python3", "train_fast_rcnn.py"]

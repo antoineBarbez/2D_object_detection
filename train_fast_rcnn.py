@@ -51,7 +51,7 @@ def parse_args():
         "--num-steps-per-epoch", default=500, type=int, help="Number of steps to complete an epoch, default=500"
     )
     parser.add_argument(
-        "--batch-size", default=2, type=int, help="Size of the batches used to update parameters, default=2"
+        "--batch-size", default=1, type=int, help="Size of the batches used to update parameters, default=2"
     )
     parser.add_argument(
         "--learning-rates",
@@ -123,7 +123,7 @@ def main():
         checkpoint.step.assign_add(1)
         step = int(checkpoint.step)
 
-        rois, _ = rpn.predict(images, True)
+        rois, _ = rpn.predict(images, False)
 
         (cls_loss, reg_loss, pred_boxes, pred_scores, pred_classes) = fast_rcnn.train_step(
             images, rois, gt_classes, gt_boxes, optimizer, 64
