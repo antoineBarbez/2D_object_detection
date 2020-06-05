@@ -48,10 +48,10 @@ def parse_args():
     )
     parser.add_argument("--num-steps", default=50000, type=int, help="Number of parameters update, default=70000")
     parser.add_argument(
-        "--num-steps-per-epoch", default=500, type=int, help="Number of steps to complete an epoch, default=500"
+        "--num-steps-per-epoch", default=2, type=int, help="Number of steps to complete an epoch, default=500"
     )
     parser.add_argument(
-        "--batch-size", default=1, type=int, help="Size of the batches used to update parameters, default=2"
+        "--batch-size", default=2, type=int, help="Size of the batches used to update parameters, default=2"
     )
     parser.add_argument(
         "--learning-rates",
@@ -83,6 +83,7 @@ def main():
         filenames=filenames_train, batch_size=args.batch_size, training=True
     )
     dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid)
+    dataset_valid = dataset_valid.take(4)
 
     train_classification_loss = tf.keras.metrics.Mean(name="train_classification_loss")
     train_regression_loss = tf.keras.metrics.Mean(name="train_regression_loss")
@@ -199,9 +200,9 @@ def main():
                             image_utils.draw_predictions_on_image(
                                 image_predictions_50,
                                 pred_boxes_50,
-                                pred_scores_50,
-                                pred_classes_50,
-                                class_names,
+                                scores=pred_scores_50,
+                                class_indices=pred_classes_50,
+                                class_names=class_names,
                                 relative=True,
                             )
                             tf.summary.image(
@@ -216,9 +217,9 @@ def main():
                             image_utils.draw_predictions_on_image(
                                 image_predictions_75,
                                 pred_boxes_75,
-                                pred_scores_75,
-                                pred_classes_75,
-                                class_names,
+                                scores=pred_scores_75,
+                                class_indices=pred_classes_75,
+                                class_names=class_names,
                                 relative=True,
                             )
                             tf.summary.image(
