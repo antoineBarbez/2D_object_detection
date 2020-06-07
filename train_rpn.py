@@ -22,13 +22,13 @@ def parse_args():
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--train-data-dir",
+        "--train-data-path",
         required=True,
         type=str,
         help="Path to a directoty containing the TFRecord file(s) for training",
     )
     parser.add_argument(
-        "--valid-data-dir",
+        "--valid-data-path",
         required=True,
         type=str,
         help="Path to a directoty containing the TFRecord file(s) for validation",
@@ -49,15 +49,15 @@ def parse_args():
         "--num-steps", default=50000, type=int, help="Number of parameters update, default=50000",
     )
     parser.add_argument(
-        "--num-steps-per-epoch", default=500, type=int, help="Number of steps to complete an epoch, default=500",
+        "--num-steps-per-epoch", default=100, type=int, help="Number of steps to complete an epoch, default=500",
     )
     parser.add_argument(
-        "--batch-size", default=4, type=int, help="Size of the batches used to update parameters, default=4",
+        "--batch-size", default=2, type=int, help="Size of the batches used to update parameters, default=4",
     )
     parser.add_argument(
         "--learning-rates",
         nargs="+",
-        default=[0.001, 0.0001],
+        default=[0.0001, 0.00005],
         type=float,
         help="List of learning rate values, default=[0.001, 0.0001]",
     )
@@ -76,14 +76,13 @@ def main():
     image_shape = (600, 1987, 3)
 
     args = parse_args()
-    filenames_train = [os.path.join(args.train_data_dir, f) for f in tf.io.gfile.listdir(args.train_data_dir)]
-    filenames_valid = [os.path.join(args.valid_data_dir, f) for f in tf.io.gfile.listdir(args.valid_data_dir)]
 
     pipeline_creator = InputPipelineCreator(num_classes=num_classes, image_shape=image_shape)
     dataset_train = pipeline_creator.create_input_pipeline(
-        filenames=filenames_train, batch_size=args.batch_size, training=True
+        filename=args.train_data_path, batch_size=args.batch_size, training=True
     )
-    dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid)
+    dataset_valid = pipeline_creator.create_input_pipeline(args.valid_data_path)
+    dataset_valid = dataset_valid.take(20)
 
     train_classification_loss = tf.keras.metrics.Mean(name="train_classification_loss")
     train_regression_loss = tf.keras.metrics.Mean(name="train_regression_loss")

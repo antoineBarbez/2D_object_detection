@@ -23,16 +23,10 @@ def parse_args():
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--train-data-dir",
-        required=True,
-        type=str,
-        help="Path to a directoty containing the TFRecord file(s) for training",
+        "--train-data-path", required=True, type=str, help="Path to the training TFRecord file",
     )
     parser.add_argument(
-        "--valid-data-dir",
-        required=True,
-        type=str,
-        help="Path to a directoty containing the TFRecord file(s) for validation",
+        "--valid-data-path", required=True, type=str, help="Path to the validation TFRecord file",
     )
     parser.add_argument(
         "--logs-dir", default="logs", type=str, help="Path to the directory where to write training logs",
@@ -48,10 +42,10 @@ def parse_args():
     )
     parser.add_argument("--num-steps", default=50000, type=int, help="Number of parameters update, default=70000")
     parser.add_argument(
-        "--num-steps-per-epoch", default=2, type=int, help="Number of steps to complete an epoch, default=500"
+        "--num-steps-per-epoch", default=50, type=int, help="Number of steps to complete an epoch, default=500"
     )
     parser.add_argument(
-        "--batch-size", default=2, type=int, help="Size of the batches used to update parameters, default=2"
+        "--batch-size", default=1, type=int, help="Size of the batches used to update parameters, default=2"
     )
     parser.add_argument(
         "--learning-rates",
@@ -75,15 +69,13 @@ def main():
     image_shape = (600, 1987, 3)
 
     args = parse_args()
-    filenames_train = [os.path.join(args.train_data_dir, f) for f in tf.io.gfile.listdir(args.train_data_dir)]
-    filenames_valid = [os.path.join(args.valid_data_dir, f) for f in tf.io.gfile.listdir(args.valid_data_dir)]
 
     pipeline_creator = InputPipelineCreator(num_classes=num_classes, image_shape=image_shape)
     dataset_train = pipeline_creator.create_input_pipeline(
-        filenames=filenames_train, batch_size=args.batch_size, training=True
+        filename=args.train_data_path, batch_size=args.batch_size, training=True
     )
-    dataset_valid = pipeline_creator.create_input_pipeline(filenames_valid)
-    dataset_valid = dataset_valid.take(4)
+    dataset_valid = pipeline_creator.create_input_pipeline(args.valid_data_path)
+    dataset_valid = dataset_valid.take(10)
 
     train_classification_loss = tf.keras.metrics.Mean(name="train_classification_loss")
     train_regression_loss = tf.keras.metrics.Mean(name="train_regression_loss")
@@ -136,6 +128,8 @@ def main():
         train_map_75(gt_boxes, gt_classes, pred_boxes, pred_scores, pred_classes)
 
         if step % args.num_steps_per_epoch == 0:
+            # print(pred_boxes)
+            # print(pred_scores)
             epoch = step // args.num_steps_per_epoch
 
             with train_summary_writer.as_default():
@@ -164,6 +158,8 @@ def main():
                     valid_map_75(gt_boxes, gt_classes, pred_boxes, pred_scores, pred_classes)
 
                     if test_step == 0:
+                        # print(pred_boxes)
+                        # print(pred_scores)
                         # Add ground-truth boxes and RoIs to summary only once
                         if epoch == 1:
                             image_gt_boxes = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
@@ -192,16 +188,16 @@ def main():
                             image_rois_background.close()
 
                         # Add predictions to summary every 5 epochs
-                        if epoch % 5 == 0:
+                        if epoch % 1 == 0:
                             image_predictions_50 = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-                            pred_boxes_50 = tf.gather_nd(pred_boxes, tf.where(pred_scores > 0.5))
-                            pred_scores_50 = tf.gather_nd(pred_scores, tf.where(pred_scores > 0.5))
-                            pred_classes_50 = tf.gather_nd(pred_scores, tf.where(pred_scores > 0.5))
+                            pred_boxes_50 = tf.gather_nd(pred_boxes, tf.where(pred_scores > 0.15))
+                            pred_scores_50 = tf.gather_nd(pred_scores, tf.where(pred_scores > 0.15))
+                            pred_classes_50 = tf.gather_nd(pred_scores, tf.where(pred_scores > 0.15))
                             image_utils.draw_predictions_on_image(
                                 image_predictions_50,
                                 pred_boxes_50,
                                 scores=pred_scores_50,
-                                class_indices=pred_classes_50,
+                                class_indices=tf.cast(pred_classes_50, tf.int32),
                                 class_names=class_names,
                                 relative=True,
                             )

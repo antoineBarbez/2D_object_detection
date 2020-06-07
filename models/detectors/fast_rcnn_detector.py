@@ -16,31 +16,29 @@ class FastRCNNDetector(AbstractDetector):
         """
         super(FastRCNNDetector, self).__init__(name=name)
 
-        initializer = tf.keras.initializers.VarianceScaling(scale=1.0, mode="fan_avg", distribution="uniform")
-        regularizer = tf.keras.regularizers.l2(0.0005)
+        # initializer = tf.keras.initializers.VarianceScaling(scale=1.0, mode="fan_avg", distribution="uniform")
+        # regularizer = tf.keras.regularizers.l2(0.0005)
 
-        self._roi_pooling = ROIPooling(
-            pooled_height=7, pooled_width=7, kernel_size=2, name="regions_of_interest_pooling"
-        )
+        self._roi_pooling = ROIPooling(pooled_size=5, kernel_size=2, name="regions_of_interest_pooling")
 
         self._cls_layer = tf.keras.layers.Dense(
             units=num_classes + 1,
             activation="softmax",
-            kernel_initializer=initializer,
-            kernel_regularizer=regularizer,
-            bias_regularizer=regularizer,
+            # kernel_initializer=initializer,
+            # kernel_regularizer=regularizer,
+            # bias_regularizer=regularizer,
             name="fast_rcnn_classification_head",
         )
 
         self._reg_layer = tf.keras.layers.Dense(
             units=4 * num_classes,
-            kernel_initializer=initializer,
-            kernel_regularizer=regularizer,
-            bias_regularizer=regularizer,
+            # kernel_initializer=initializer,
+            # kernel_regularizer=regularizer,
+            # bias_regularizer=regularizer,
             name="fast_rcnn_regression_head",
         )
         self._reg_reshape = tf.keras.layers.Reshape(
-            target_shape=(-1, num_classes, 4), name="fast_rcnn_regression_head_reshape"
+            target_shape=(num_classes, 4), name="fast_rcnn_regression_head_reshape"
         )
 
         self._image_shape = image_shape
@@ -72,7 +70,7 @@ class FastRCNNDetector(AbstractDetector):
 
         rois = box_utils.to_absolute(rois, self._image_shape)
 
-        return rois, pred_class_scores, pred_boxes_encoded
+        return rois, tf.expand_dims(pred_class_scores, 0), tf.expand_dims(pred_boxes_encoded, 0)
 
     def postprocess_output(self, rois, pred_class_scores, pred_boxes_encoded, training):
         """
@@ -113,10 +111,9 @@ class FastRCNNDetector(AbstractDetector):
 
 
 class ROIPooling(tf.keras.layers.Layer):
-    def __init__(self, pooled_height, pooled_width, kernel_size, **kwargs):
+    def __init__(self, pooled_size, kernel_size, **kwargs):
         super(ROIPooling, self).__init__(**kwargs)
-        self._pooled_height = pooled_height
-        self._pooled_width = pooled_width
+        self._pooled_size = pooled_size
         self._kernel_size = kernel_size
 
         self._max_pool = tf.keras.layers.MaxPool2D(kernel_size, name="max_pool_2d")
@@ -144,7 +141,7 @@ class ROIPooling(tf.keras.layers.Layer):
             image=feature_maps,
             boxes=rois,
             box_indices=tf.repeat(tf.range(batch_size), num_rois),
-            crop_size=[self._pooled_height * self._kernel_size, self._pooled_width * self._kernel_size],
+            crop_size=[self._pooled_size * self._kernel_size, self._pooled_size * self._kernel_size],
             name="crop_and_resize",
         )
 
@@ -153,8 +150,8 @@ class ROIPooling(tf.keras.layers.Layer):
         if flatten:
             pooled_features = self._flatten(pooled_features)
 
-        if keep_batch_dim:
+        """if keep_batch_dim:
             size_splits = tf.tile(tf.expand_dims(num_rois, 0), [batch_size])
-            pooled_features = tf.stack(tf.split(pooled_features, size_splits))
+            pooled_features = tf.stack(tf.split(pooled_features, size_splits))"""
 
         return pooled_features
