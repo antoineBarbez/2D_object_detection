@@ -15,7 +15,7 @@ class FasterRCNN(AbstractDetectionModel):
         rpn_scales=[0.25, 0.5, 1.0, 2.0],
         rpn_aspect_ratios=[0.5, 1.0, 2.0],
         rpn_base_anchor_shape=(256, 256),
-        name="fast_rcnn",
+        name="faster_rcnn",
     ):
         """
         Instantiate a Fast-RCNN model.
@@ -29,11 +29,9 @@ class FasterRCNN(AbstractDetectionModel):
         self._image_shape = image_shape
 
         self.feature_extractor = get_feature_extractor_model(image_shape)
-        # self.feature_extractor.trainable = False
 
         _, grid_height, grid_width, _ = self.feature_extractor.output_shape
         grid_shape = (grid_height, grid_width)
-        print(image_shape[0] / grid_height)
 
         self.rpn_detector = RPNDetector(
             image_shape=image_shape,
