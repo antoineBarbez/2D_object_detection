@@ -121,7 +121,7 @@ def main():
         checkpoint.step.assign_add(1)
         step = int(checkpoint.step)
 
-        cls_loss, reg_loss, pred_boxes, pred_scores = model.train_step(images, classes, boxes, optimizer, 256)
+        cls_loss, reg_loss, pred_boxes, pred_scores = model.train_step(images, classes, boxes, optimizer)
 
         train_classification_loss(cls_loss)
         train_regression_loss(reg_loss)
@@ -148,7 +148,7 @@ def main():
                         pred_scores,
                         foreground_anchors,
                         background_anchors,
-                    ) = model.test_step(images, classes, boxes, 256)
+                    ) = model.test_step(images, classes, boxes)
 
                     valid_classification_loss(cls_loss)
                     valid_regression_loss(reg_loss)

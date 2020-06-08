@@ -33,12 +33,10 @@ class InputPipelineCreator(object):
         dataset = dataset.map(self._decode_and_preprocess, num_parallel_calls=tf.data.experimental.AUTOTUNE)
 
         if training:
-            dataset = dataset.repeat().shuffle(1024).batch(batch_size)
-            dataset = dataset.map(self._augment_batch, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-        else:
-            dataset = dataset.cache()
-            dataset = dataset.batch(batch_size)
+            dataset = dataset.repeat().shuffle(1024)
+            dataset = dataset.map(self._augment, num_parallel_calls=tf.data.experimental.AUTOTUNE)
 
+        dataset = dataset.batch(batch_size)
         dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
 
         return dataset
@@ -112,7 +110,7 @@ class InputPipelineCreator(object):
         image_height_original = tf.cast(features["image/height"], tf.int32)
 
         image = tf.io.decode_image(features["image/encoded"])
-        image = tf.cast(image, dtype=tf.float32)
+        # image = tf.cast(image, dtype=tf.float32)
         image = tf.reshape(image, [image_height_original, image_width_original, 3])
 
         new_height, new_width, _ = self.image_shape

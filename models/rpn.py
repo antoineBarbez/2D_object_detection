@@ -1,10 +1,8 @@
 import tensorflow as tf
-import utils.sampling as sampling_utils
 
 from models.abstract_detection_model import AbstractDetectionModel
 from models.detectors.rpn_detector import RPNDetector
-from models.feature_extractor import preprocess_input, ResNet50FeatureExtractor
-from utils.targets import TargetGenerator
+from models.feature_extractor import get_feature_extractor_model
 
 
 class RPN(AbstractDetectionModel):
@@ -25,31 +23,11 @@ class RPN(AbstractDetectionModel):
             - window_size: Size of the sliding window.
             - scales: Anchors' scales.
             - aspect_ratios: Anchors' aspect ratios.
-            - base_anchor_shape: Shape of the base anchor. 
+            - base_anchor_shape: Shape of the base anchor.
         """
         super(RPN, self).__init__(image_shape=image_shape, name=name)
 
-        self._target_generator = TargetGenerator(
-            image_shape=image_shape,
-            num_classes=1,
-            foreground_iou_interval=(0.7, 1.0),
-            background_iou_interval=(0.0, 0.3),
-        )
-
-        """self.feature_extractor = ResNet50FeatureExtractor(
-            kernel_regularizer=tf.keras.regularizers.l2(0.00005), input_shape=image_shape
-        )"""
-
-        resnet_50 = tf.keras.applications.ResNet50(include_top=False, weights="imagenet", input_shape=image_shape)
-
-        for i, layer in enumerate(resnet_50.layers):
-            if layer.name == "conv4_block6_out":
-                index = i
-
-        self.feature_extractor = tf.keras.Model(inputs=resnet_50.input, outputs=resnet_50.layers[index].output)
-
-        for layer in self.feature_extractor.layers:
-            print(layer.name)
+        self.feature_extractor = get_feature_extractor_model(image_shape)
 
         _, grid_height, grid_width, _ = self.feature_extractor.output_shape
         grid_shape = (grid_height, grid_width)
@@ -64,9 +42,9 @@ class RPN(AbstractDetectionModel):
         )
 
     def call(self, images, training):
-        preprocessed_images = preprocess_input(images)
+        # preprocessed_images = preprocess_input(images)
 
-        feature_maps = self.feature_extractor(preprocessed_images, training=training)
+        feature_maps = self.feature_extractor(images, training=training)
 
         return self.detector(feature_maps, training=training)
 
@@ -91,7 +69,7 @@ class RPN(AbstractDetectionModel):
         return self.detector.postprocess_output(anchors, pred_class_scores, pred_boxes_encoded, training)
 
     @tf.function
-    def train_step(self, images, gt_class_labels, gt_boxes, optimizer, num_samples_per_image):
+    def train_step(self, images, gt_class_labels, gt_boxes, optimizer):
         """
         Args:
             - images: Input images. A tensor of shape [batch_size, height, width, 3].
@@ -109,17 +87,7 @@ class RPN(AbstractDetectionModel):
             - pred_scores: predicted objectness scores.
         """
         with tf.GradientTape() as tape:
-            anchors, pred_objectness_scores, pred_boxes_encoded = self.call(images, True)
-
-            gt_objectness_labels = tf.one_hot(
-                indices=tf.cast(tf.reduce_sum(gt_class_labels, -1), dtype=tf.int32), depth=2
-            )
-
-            target_objectness_labels, target_boxes_encoded = tf.map_fn(
-                fn=lambda x: self._target_generator.generate_targets(x[0], x[1], anchors),
-                elems=(gt_objectness_labels, gt_boxes),
-                dtype=(tf.float32, tf.float32),
-            )
+            anchors, pred_objectness_scores, pred_boxes_encoded = self(images, True)
 
             (
                 target_objectness_labels_sample,
@@ -127,10 +95,8 @@ class RPN(AbstractDetectionModel):
                 pred_objectness_scores_sample,
                 pred_boxes_encoded_sample,
                 _,
-            ) = tf.map_fn(
-                fn=lambda x: sampling_utils.sample_image(x[0], x[1], x[2], x[3], anchors, num_samples_per_image, 0.5),
-                elems=(target_objectness_labels, target_boxes_encoded, pred_objectness_scores, pred_boxes_encoded),
-                dtype=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+            ) = self.detector.get_training_samples(
+                anchors, gt_class_labels, gt_boxes, pred_objectness_scores, pred_boxes_encoded
             )
 
             cls_loss = self._classification_loss(target_objectness_labels_sample, pred_objectness_scores_sample)
@@ -147,7 +113,7 @@ class RPN(AbstractDetectionModel):
         return cls_loss, reg_loss, pred_boxes, pred_scores
 
     @tf.function
-    def test_step(self, images, gt_class_labels, gt_boxes, num_samples_per_image):
+    def test_step(self, images, gt_class_labels, gt_boxes):
         """
         Args:
             - images: Input images. A tensor of shape [batch_size, height, width, 3].
@@ -165,15 +131,7 @@ class RPN(AbstractDetectionModel):
             - foreground_anchors: Anchors labeled as foreground.
             - background_anchors: Anchors labeled as background.
         """
-        anchors, pred_objectness_scores, pred_boxes_encoded = self.call(images, False)
-
-        gt_objectness_labels = tf.one_hot(indices=tf.cast(tf.reduce_sum(gt_class_labels, -1), dtype=tf.int32), depth=2)
-
-        target_objectness_labels, target_boxes_encoded = tf.map_fn(
-            fn=lambda x: self._target_generator.generate_targets(x[0], x[1], anchors),
-            elems=(gt_objectness_labels, gt_boxes),
-            dtype=(tf.float32, tf.float32),
-        )
+        anchors, pred_objectness_scores, pred_boxes_encoded = self(images, False)
 
         (
             target_objectness_labels_sample,
@@ -181,10 +139,8 @@ class RPN(AbstractDetectionModel):
             pred_objectness_scores_sample,
             pred_boxes_encoded_sample,
             anchors_sample,
-        ) = tf.map_fn(
-            fn=lambda x: sampling_utils.sample_image(x[0], x[1], x[2], x[3], anchors, num_samples_per_image, 0.5),
-            elems=(target_objectness_labels, target_boxes_encoded, pred_objectness_scores, pred_boxes_encoded),
-            dtype=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+        ) = self.detector.get_training_samples(
+            anchors, gt_class_labels, gt_boxes, pred_objectness_scores, pred_boxes_encoded
         )
 
         cls_loss = self._classification_loss(target_objectness_labels_sample, pred_objectness_scores_sample)

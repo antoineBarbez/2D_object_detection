@@ -119,7 +119,7 @@ def main():
         rois, _ = rpn.predict(images, False)
 
         (cls_loss, reg_loss, pred_boxes, pred_scores, pred_classes) = fast_rcnn.train_step(
-            images, rois, gt_classes, gt_boxes, optimizer, 64
+            images, rois, gt_classes, gt_boxes, optimizer
         )
 
         train_classification_loss(cls_loss)
@@ -150,7 +150,7 @@ def main():
                         pred_classes,
                         foreground_rois,
                         background_rois,
-                    ) = fast_rcnn.test_step(images, rois, gt_classes, gt_boxes, 64)
+                    ) = fast_rcnn.test_step(images, rois, gt_classes, gt_boxes)
 
                     valid_classification_loss(cls_loss)
                     valid_regression_loss(reg_loss)

@@ -1,8 +1,10 @@
 import tensorflow as tf
 import utils.boxes as box_utils
 import utils.post_processing as postprocess_utils
+import utils.sampling as sampling_utils
 
 from models.detectors.abstract_detector import AbstractDetector
+from utils.targets import TargetGenerator
 
 
 class FastRCNNDetector(AbstractDetector):
@@ -16,32 +18,37 @@ class FastRCNNDetector(AbstractDetector):
         """
         super(FastRCNNDetector, self).__init__(name=name)
 
-        # initializer = tf.keras.initializers.VarianceScaling(scale=1.0, mode="fan_avg", distribution="uniform")
-        # regularizer = tf.keras.regularizers.l2(0.0005)
+        initializer = tf.keras.initializers.VarianceScaling(scale=1.0, mode="fan_avg", distribution="uniform")
+        regularizer = tf.keras.regularizers.l2(0.0005)
 
         self._roi_pooling = ROIPooling(pooled_size=5, kernel_size=2, name="regions_of_interest_pooling")
 
         self._cls_layer = tf.keras.layers.Dense(
             units=num_classes + 1,
             activation="softmax",
-            # kernel_initializer=initializer,
-            # kernel_regularizer=regularizer,
-            # bias_regularizer=regularizer,
+            kernel_initializer=initializer,
+            kernel_regularizer=regularizer,
             name="fast_rcnn_classification_head",
         )
 
         self._reg_layer = tf.keras.layers.Dense(
             units=4 * num_classes,
-            # kernel_initializer=initializer,
-            # kernel_regularizer=regularizer,
-            # bias_regularizer=regularizer,
+            kernel_initializer=initializer,
+            kernel_regularizer=regularizer,
             name="fast_rcnn_regression_head",
         )
         self._reg_reshape = tf.keras.layers.Reshape(
-            target_shape=(num_classes, 4), name="fast_rcnn_regression_head_reshape"
+            target_shape=(-1, num_classes, 4), name="fast_rcnn_regression_head_reshape"
         )
 
         self._image_shape = image_shape
+
+        self._target_generator = TargetGenerator(
+            image_shape=image_shape,
+            num_classes=num_classes,
+            foreground_iou_interval=(0.5, 1.0),
+            background_iou_interval=(0.0, 0.5),
+        )
 
     def call(self, feature_maps, rois):
         """
@@ -70,7 +77,20 @@ class FastRCNNDetector(AbstractDetector):
 
         rois = box_utils.to_absolute(rois, self._image_shape)
 
-        return rois, tf.expand_dims(pred_class_scores, 0), tf.expand_dims(pred_boxes_encoded, 0)
+        return rois, pred_class_scores, pred_boxes_encoded
+
+    def get_training_samples(self, rois, gt_class_labels, gt_boxes, pred_class_scores, pred_boxes_encoded):
+        target_class_labels, target_boxes_encoded = tf.map_fn(
+            fn=lambda x: self._target_generator.generate_targets(x[0], x[1], x[2]),
+            elems=(gt_class_labels, gt_boxes, rois),
+            dtype=(tf.float32, tf.float32),
+        )
+
+        return tf.map_fn(
+            fn=lambda x: sampling_utils.sample_image(x[0], x[1], x[2], x[3], x[4], 64, 0.25),
+            elems=(target_class_labels, target_boxes_encoded, pred_class_scores, pred_boxes_encoded, rois),
+            dtype=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+        )
 
     def postprocess_output(self, rois, pred_class_scores, pred_boxes_encoded, training):
         """
@@ -150,8 +170,8 @@ class ROIPooling(tf.keras.layers.Layer):
         if flatten:
             pooled_features = self._flatten(pooled_features)
 
-        """if keep_batch_dim:
+        if keep_batch_dim:
             size_splits = tf.tile(tf.expand_dims(num_rois, 0), [batch_size])
-            pooled_features = tf.stack(tf.split(pooled_features, size_splits))"""
+            pooled_features = tf.stack(tf.split(pooled_features, size_splits))
 
         return pooled_features

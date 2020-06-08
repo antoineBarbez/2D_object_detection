@@ -1,12 +1,8 @@
 import tensorflow as tf
-import utils.sampling as sampling_utils
 
 from models.abstract_detection_model import AbstractDetectionModel
 from models.detectors.fast_rcnn_detector import FastRCNNDetector
-from models.feature_extractor import preprocess_input, ResNet50FeatureExtractor
-from utils.targets import TargetGenerator
-
-import utils.boxes as box_utils
+from models.feature_extractor import get_feature_extractor_model
 
 
 class FastRCNN(AbstractDetectionModel):
@@ -20,23 +16,14 @@ class FastRCNN(AbstractDetectionModel):
         """
         super(FastRCNN, self).__init__(image_shape=image_shape, name=name)
 
-        self._target_generator = TargetGenerator(
-            image_shape=image_shape,
-            num_classes=num_classes,
-            foreground_iou_interval=(0.5, 1.0),
-            background_iou_interval=(0.0, 0.5),
-        )
+        self._image_shape = image_shape
 
-        self.feature_extractor = ResNet50FeatureExtractor(
-            kernel_regularizer=tf.keras.regularizers.l2(0.00005), input_shape=image_shape
-        )
+        self.feature_extractor = get_feature_extractor_model(image_shape)
 
         self.detector = FastRCNNDetector(image_shape, num_classes)
 
     def call(self, images, rois, training=False):
-        preprocessed_images = preprocess_input(images)
-
-        feature_maps = self.feature_extractor(preprocessed_images, training=training)
+        feature_maps = self.feature_extractor(images, training=training)
 
         return self.detector(feature_maps, rois)
 
@@ -67,7 +54,7 @@ class FastRCNN(AbstractDetectionModel):
         return self.detector.postprocess_output(rois, pred_class_scores, pred_boxes_encoded, training)
 
     @tf.function
-    def train_step(self, images, rois, gt_class_labels, gt_boxes, optimizer, num_samples_per_image):
+    def train_step(self, images, rois, gt_class_labels, gt_boxes, optimizer):
         """
         Args:
             - images: Input images. A tensor of shape [batch_size, height, width, 3].
@@ -87,13 +74,7 @@ class FastRCNN(AbstractDetectionModel):
             - pred_classes: predicted class indices.
         """
         with tf.GradientTape() as tape:
-            rois, pred_class_scores, pred_boxes_encoded = self.call(images, rois, True)
-
-            target_class_labels, target_boxes_encoded = tf.map_fn(
-                fn=lambda x: self._target_generator.generate_targets(x[0], x[1], x[2]),
-                elems=(gt_class_labels, gt_boxes, rois),
-                dtype=(tf.float32, tf.float32),
-            )
+            rois, pred_class_scores, pred_boxes_encoded = self(images, rois, True)
 
             (
                 target_class_labels_sample,
@@ -101,10 +82,8 @@ class FastRCNN(AbstractDetectionModel):
                 pred_class_scores_sample,
                 pred_boxes_encoded_sample,
                 _,
-            ) = tf.map_fn(
-                fn=lambda x: sampling_utils.sample_image(x[0], x[1], x[2], x[3], x[4], num_samples_per_image, 0.25),
-                elems=(target_class_labels, target_boxes_encoded, pred_class_scores, pred_boxes_encoded, rois),
-                dtype=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+            ) = self.detector.get_training_samples(
+                rois, gt_class_labels, gt_boxes, pred_class_scores, pred_boxes_encoded
             )
 
             cls_loss = self._classification_loss(target_class_labels_sample, pred_class_scores_sample)
@@ -121,7 +100,7 @@ class FastRCNN(AbstractDetectionModel):
         return cls_loss, reg_loss, pred_boxes, pred_scores, pred_classes
 
     @tf.function
-    def test_step(self, images, rois, gt_class_labels, gt_boxes, num_samples_per_image):
+    def test_step(self, images, rois, gt_class_labels, gt_boxes):
         """
         Args:
             - images: Input images. A tensor of shape [batch_size, height, width, 3].
@@ -141,13 +120,7 @@ class FastRCNN(AbstractDetectionModel):
             - foreground_rois: RoIs labeled as foreground.
             - background_rois: RoIs labeled as background.
         """
-        rois, pred_class_scores, pred_boxes_encoded = self.call(images, rois, False)
-
-        target_class_labels, target_boxes_encoded = tf.map_fn(
-            fn=lambda x: self._target_generator.generate_targets(x[0], x[1], x[2]),
-            elems=(gt_class_labels, gt_boxes, rois),
-            dtype=(tf.float32, tf.float32),
-        )
+        rois, pred_class_scores, pred_boxes_encoded = self(images, rois, False)
 
         (
             target_class_labels_sample,
@@ -155,18 +128,13 @@ class FastRCNN(AbstractDetectionModel):
             pred_class_scores_sample,
             pred_boxes_encoded_sample,
             rois_sample,
-        ) = tf.map_fn(
-            fn=lambda x: sampling_utils.sample_image(x[0], x[1], x[2], x[3], x[4], num_samples_per_image, 0.25),
-            elems=(target_class_labels, target_boxes_encoded, pred_class_scores, pred_boxes_encoded, rois),
-            dtype=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
-        )
+        ) = self.detector.get_training_samples(rois, gt_class_labels, gt_boxes, pred_class_scores, pred_boxes_encoded)
 
         cls_loss = self._classification_loss(target_class_labels_sample, pred_class_scores_sample)
         reg_loss = self._regression_loss(
             target_class_labels_sample, target_boxes_encoded_sample, pred_boxes_encoded_sample
         )
 
-        # pred_boxes_encoded = tf.tile(tf.expand_dims(target_boxes_encoded, 2), [1, 1, 7, 1])
         pred_boxes, pred_scores, pred_classes = self.postprocess_output(rois, pred_class_scores, pred_boxes_encoded)
 
         foreground_inds = tf.where(target_class_labels_sample[..., 0] == 0.0)
