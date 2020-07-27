@@ -18,7 +18,7 @@ class FasterRCNN(AbstractDetectionModel):
         name="faster_rcnn",
     ):
         """
-        Instantiate a Fast-RCNN model.
+        Instantiate a Faster-RCNN model.
 
         Args:
             - image_shape: Shape of the input images.

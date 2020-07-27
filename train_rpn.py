@@ -46,10 +46,10 @@ def parse_args():
         "--checkpoints-dir", default="checkpoints", type=str, help="Path to the directory where to store checkpoints",
     )
     parser.add_argument(
-        "--num-steps", default=50000, type=int, help="Number of parameters update, default=50000",
+        "--num-steps", default=30000, type=int, help="Number of parameters update, default=50000",
     )
     parser.add_argument(
-        "--num-steps-per-epoch", default=100, type=int, help="Number of steps to complete an epoch, default=500",
+        "--num-steps-per-epoch", default=200, type=int, help="Number of steps to complete an epoch, default=500",
     )
     parser.add_argument(
         "--batch-size", default=2, type=int, help="Size of the batches used to update parameters, default=4",
@@ -57,7 +57,7 @@ def parse_args():
     parser.add_argument(
         "--learning-rates",
         nargs="+",
-        default=[0.0001, 0.00005],
+        default=[0.001, 0.0001],
         type=float,
         help="List of learning rate values, default=[0.001, 0.0001]",
     )
