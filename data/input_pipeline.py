@@ -77,7 +77,7 @@ class InputPipelineCreator(object):
         return tf.map_fn(
             fn=lambda x: self._augment(x[0], x[1], x[2]),
             elems=(images, classes, boxes),
-            dtype=(tf.float32, tf.float32, tf.float32),
+            dtype=(tf.uint8, tf.float32, tf.float32),
         )
 
     def _decode_and_preprocess(self, value):
@@ -115,6 +115,7 @@ class InputPipelineCreator(object):
 
         new_height, new_width, _ = self.image_shape
         image = tf.image.resize(image, [new_height, new_width])
+        image = tf.cast(image, dtype=tf.uint8)
 
         classes = tf.one_hot(features["label/ids"].values + 1, self.num_classes + 1)
         classes = self._pad_or_clip(classes, [self.max_num_objects, self.num_classes + 1])

@@ -49,14 +49,14 @@ def parse_args():
     parser.add_argument(
         "--learning-rates",
         nargs="+",
-        default=[0.0001, 0.00001],
+        default=[0.001, 0.0001, 0.00001],
         type=float,
         help="List of learning rate values, default=[0.001, 0.0001]",
     )
     parser.add_argument(
         "--decay-steps",
         nargs="*",
-        default=[50000],
+        default=[5000, 50000],
         type=int,
         help="List of steps at which we decay the learning rate, default=[40000]",
     )

@@ -29,6 +29,7 @@ class FasterRCNN(AbstractDetectionModel):
         self._image_shape = image_shape
 
         self.feature_extractor = get_feature_extractor_model(image_shape)
+        #self.feature_extractor.trainable = False
 
         _, grid_height, grid_width, _ = self.feature_extractor.output_shape
         grid_shape = (grid_height, grid_width)
@@ -52,7 +53,6 @@ class FasterRCNN(AbstractDetectionModel):
         rois, _ = self.rpn_detector.postprocess_output(
             anchors, rpn_pred_objectness_scores, rpn_pred_boxes_encoded, training=training
         )
-        rois = tf.stop_gradient(rois)
         rois, pred_class_scores, pred_boxes_encoded = self.fast_rcnn_detector(feature_maps, rois)
 
         return anchors, rpn_pred_objectness_scores, rpn_pred_boxes_encoded, rois, pred_class_scores, pred_boxes_encoded
@@ -139,13 +139,13 @@ class FasterRCNN(AbstractDetectionModel):
                 rpn_target_objectness_labels_sample, rpn_pred_objectness_scores_sample
             )
             rpn_reg_loss = self._regression_loss(
-                rpn_target_objectness_labels_sample, target_boxes_encoded_sample, pred_boxes_encoded_sample
+                rpn_target_objectness_labels_sample, rpn_target_boxes_encoded_sample, rpn_pred_boxes_encoded_sample
             )
             cls_loss = self._classification_loss(target_class_labels_sample, pred_class_scores_sample)
             reg_loss = self._regression_loss(
-                target_class_labels_sample, rpn_target_boxes_encoded_sample, rpn_pred_boxes_encoded_sample
+                target_class_labels_sample, target_boxes_encoded_sample, pred_boxes_encoded_sample
             )
-            multi_task_loss = rpn_cls_loss + rpn_reg_loss + cls_loss + reg_loss
+            multi_task_loss = rpn_cls_loss + 2 * rpn_reg_loss + cls_loss + 2 * reg_loss
 
         gradients = tape.gradient(multi_task_loss, self.trainable_variables)
         optimizer.apply_gradients(zip(gradients, self.trainable_variables))
@@ -214,7 +214,7 @@ class FasterRCNN(AbstractDetectionModel):
         # Get losses
         cls_loss = self._classification_loss(target_class_labels_sample, pred_class_scores_sample)
         reg_loss = self._regression_loss(
-            target_class_labels_sample, rpn_target_boxes_encoded_sample, rpn_pred_boxes_encoded_sample
+            target_class_labels_sample, target_boxes_encoded_sample, pred_boxes_encoded_sample
         )
 
         pred_boxes, pred_scores, pred_classes = self.postprocess_output(rois, pred_class_scores, pred_boxes_encoded)

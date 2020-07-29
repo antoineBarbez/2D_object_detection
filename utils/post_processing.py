@@ -58,4 +58,4 @@ def postprocess_output(
         clip_boxes=True,
     )
 
-    return nmsed_boxes, nmsed_scores, nmsed_classes, num_valid_detections
+    return tf.stop_gradient(nmsed_boxes), tf.stop_gradient(nmsed_scores), nmsed_classes, num_valid_detections

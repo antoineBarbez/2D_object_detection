@@ -37,19 +37,15 @@ def sample_image(
 		(tf.reduce_sum(target_class_labels, -1) != 0.0) &
 		(target_class_labels[:, 0] == 1.0)), [-1])
 
-	foreground_inds = tf.random.shuffle(foreground_inds)
-	background_inds = tf.random.shuffle(background_inds)
-
-	num_foreground_regions = tf.size(foreground_inds)
-	num_background_regions = tf.size(background_inds)
-
-	num_foreground_regions_to_keep = tf.minimum(
-		num_foreground_regions,
+	num_foreground_inds = tf.minimum(
+		tf.size(foreground_inds),
 		tf.cast(tf.math.round(num_samples*foreground_proportion), dtype=tf.int32))
-	num_background_regions_to_keep = num_samples - num_foreground_regions_to_keep
+	num_background_inds = num_samples - num_foreground_inds
 	
-	foreground_inds = foreground_inds[:num_foreground_regions_to_keep]
-	background_inds = background_inds[:num_background_regions_to_keep]
+	foreground_inds = tf.random.shuffle(foreground_inds)
+	foreground_inds = foreground_inds[:num_foreground_inds]
+	
+	background_inds = tf.gather(background_inds, tf.random.uniform([num_background_inds], minval=0, maxval=tf.size(background_inds), dtype=tf.int32))
 
 	inds_to_keep = tf.concat([foreground_inds, background_inds], 0)
 	inds_to_keep.set_shape([num_samples])
