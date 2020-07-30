@@ -50,19 +50,20 @@ class TargetGenerator(object):
 
 		# Compute pairwise IoU overlap between regions and ground-truth boxes
 		ious = metrics.iou(regions, abs_gt_boxes, pairwise=True)
-		max_iou_indices = tf.math.argmax(ious, -1)
+		max_iou_indices = tf.math.argmax(ious, axis=-1)
 		max_iou_per_region = tf.reduce_max(ious, axis=-1)
 		max_iou = tf.reduce_max(max_iou_per_region)
 
 		# Create target class labels
-		background_label = tf.one_hot(0, self._num_classes + 1)
-		ignore_label = tf.zeros(self._num_classes + 1)
+		num_regions = tf.shape(regions)[0]
+		background_mask, foreground_mask = self._get_masks(max_iou_per_region, max_iou)
 
-		background_condition, ignore_condition = self._get_conditions(max_iou_per_region, max_iou)
-
-		target_class_labels = tf.gather(gt_class_labels, max_iou_indices)
-		target_class_labels = tf.where(background_condition, background_label, target_class_labels)
-		target_class_labels = tf.where(ignore_condition, ignore_label, target_class_labels)
+		background_labels = tf.one_hot(tf.zeros(num_regions, dtype=tf.int32), self._num_classes + 1)
+		foreground_labels = tf.gather(gt_class_labels, max_iou_indices)
+		
+		target_class_labels = tf.zeros([num_regions, self._num_classes + 1])
+		target_class_labels = tf.where(background_mask, background_labels, target_class_labels)
+		target_class_labels = tf.where(foreground_mask, foreground_labels, target_class_labels)
 
 		# Create target boxes
 		target_boxes = tf.gather(abs_gt_boxes, max_iou_indices)
@@ -70,19 +71,18 @@ class TargetGenerator(object):
 
 		return target_class_labels, target_boxes_encoded
 
-	def _get_conditions(self, max_iou_per_region, max_iou):
-		foreground_condition = (max_iou_per_region >= self._min_f) & (max_iou_per_region < self._max_f)
-		foreground_condition = foreground_condition | (max_iou_per_region == max_iou)
+	def _get_masks(self, max_iou_per_region, max_iou):
+		background_mask = (max_iou_per_region >= self._min_b) & (max_iou_per_region < self._max_b)
+		background_mask = tf.expand_dims(background_mask, 1)
+		background_mask = tf.tile(background_mask, [1, self._num_classes + 1])
 
-		background_condition = (max_iou_per_region >= self._min_b) & (max_iou_per_region < self._max_b)
-		background_condition = background_condition & (max_iou_per_region != max_iou)
+		foreground_mask = (max_iou_per_region >= self._min_f) & (max_iou_per_region < self._max_f)
+		max_iou_indice = tf.where(max_iou_per_region == max_iou)[0][0]
+		force_one_foreground_mask = tf.one_hot(max_iou_indice, tf.shape(foreground_mask)[0], on_value=True, off_value=False)
+		foreground_mask = foreground_mask | force_one_foreground_mask
 
-		ignore_condition = tf.math.logical_not(foreground_condition | background_condition)
+		foreground_mask = tf.expand_dims(foreground_mask, 1)
+		foreground_mask = tf.tile(foreground_mask, [1, self._num_classes + 1])
 
-		background_condition = tf.expand_dims(background_condition, 1)
-		background_condition = tf.tile(background_condition, [1, self._num_classes + 1])
-
-		ignore_condition = tf.expand_dims(ignore_condition, 1)
-		ignore_condition = tf.tile(ignore_condition, [1, self._num_classes + 1])
-
-		return background_condition, ignore_condition
+		return background_mask, foreground_mask
+		
