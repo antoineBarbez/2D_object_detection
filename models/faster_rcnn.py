@@ -135,30 +135,37 @@ class FasterRCNN(AbstractDetectionModel):
             )
 
             # Compute multi task loss
-            rpn_cls_loss = self._classification_loss(
+            losses = {}
+            losses["rpn_cls"] = self._classification_loss(
                 rpn_target_objectness_labels_sample, rpn_pred_objectness_scores_sample
             )
-            rpn_reg_loss = self._regression_loss(
+            losses["rpn_reg"] = self._regression_loss(
                 rpn_target_objectness_labels_sample, rpn_target_boxes_encoded_sample, rpn_pred_boxes_encoded_sample
             )
-            cls_loss = self._classification_loss(target_class_labels_sample, pred_class_scores_sample)
-            reg_loss = self._regression_loss(
+            losses["rcnn_cls"] = self._classification_loss(target_class_labels_sample, pred_class_scores_sample)
+            losses["rcnn_reg"] = self._regression_loss(
                 target_class_labels_sample, target_boxes_encoded_sample, pred_boxes_encoded_sample
             )
-            multi_task_loss = rpn_cls_loss + 2 * rpn_reg_loss + cls_loss + 2 * reg_loss
+            multi_task_loss = sum(losses.values())
+
 
         gradients = tape.gradient(multi_task_loss, self.trainable_variables)
         optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
-        pred_boxes, pred_scores, pred_classes = self.postprocess_output(rois, pred_class_scores, pred_boxes_encoded)
-
-        return (
-            cls_loss,
-            reg_loss,
-            pred_boxes,
-            pred_scores,
-            pred_classes,
+        rpn_pred_boxes, rpn_pred_scores = self.rpn_detector.postprocess_output(
+            anchors, rpn_pred_objectness_scores, rpn_pred_boxes_encoded, training=True
         )
+        rcnn_pred_boxes, rcnn_pred_scores, rcnn_pred_classes = self.postprocess_output(rois, pred_class_scores, pred_boxes_encoded, training=True)
+
+        preds = {
+            "rpn_boxes": rpn_pred_boxes,
+            "rpn_scores": rpn_pred_scores,
+            "rcnn_boxes": rcnn_pred_boxes,
+            "rcnn_scores": rcnn_pred_scores,
+            "rcnn_classes": rcnn_pred_classes
+        }
+
+        return losses, preds
 
     @tf.function
     def test_step(self, images, gt_class_labels, gt_boxes):
@@ -212,17 +219,30 @@ class FasterRCNN(AbstractDetectionModel):
         )
 
         # Get losses
-        cls_loss = self._classification_loss(target_class_labels_sample, pred_class_scores_sample)
-        reg_loss = self._regression_loss(
+        losses = {}
+        losses["rpn_cls"] = self._classification_loss(
+            rpn_target_objectness_labels_sample, rpn_pred_objectness_scores_sample
+        )
+        losses["rpn_reg"] = self._regression_loss(
+            rpn_target_objectness_labels_sample, rpn_target_boxes_encoded_sample, rpn_pred_boxes_encoded_sample
+        )
+        losses["rcnn_cls"] = self._classification_loss(target_class_labels_sample, pred_class_scores_sample)
+        losses["rcnn_reg"] = self._regression_loss(
             target_class_labels_sample, target_boxes_encoded_sample, pred_boxes_encoded_sample
         )
 
-        pred_boxes, pred_scores, pred_classes = self.postprocess_output(rois, pred_class_scores, pred_boxes_encoded)
-
-        return (
-            cls_loss,
-            reg_loss,
-            pred_boxes,
-            pred_scores,
-            pred_classes,
+        rpn_pred_boxes, rpn_pred_scores = self.rpn_detector.postprocess_output(
+            anchors, rpn_pred_objectness_scores, rpn_pred_boxes_encoded
         )
+        rcnn_pred_boxes, rcnn_pred_scores, rcnn_pred_classes = self.postprocess_output(rois, pred_class_scores, pred_boxes_encoded, training=False)
+
+        preds = {
+            "rpn_boxes": rpn_pred_boxes,
+            "rpn_scores": rpn_pred_scores,
+            "rcnn_boxes": rcnn_pred_boxes,
+            "rcnn_scores": rcnn_pred_scores,
+            "rcnn_classes": rcnn_pred_classes
+        }
+        pred_boxes, pred_scores, pred_classes = self.postprocess_output(rois, pred_class_scores, pred_boxes_encoded, training=False)
+
+        return losses, preds
