@@ -12,7 +12,7 @@ def sample_image(
 	Args:
 		- target_class_labels: A tensor of shape [num_regions, num_classes + 1] representing the target
 			labels for each region. The target label for ignored regions is zeros(num_classes + 1).
-		- target_boxes_encoded: A tensor of shape [num_regions, 4] representing the encoded target ground-truth 
+		- target_boxes_encoded: A tensor of shape [num_regions, num_classes, 4] representing the encoded target ground-truth 
 			bounding box for each region, i.e., the ground-truth bounding box with the highest IoU 
 			overlap with the considered region. 
 		- pred_class_scores: Output of the classification head. A tensor of shape 

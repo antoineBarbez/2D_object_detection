@@ -80,7 +80,6 @@ class RPNDetector(AbstractDetector):
 
         self._target_generator = TargetGenerator(
             image_shape=image_shape,
-            num_classes=1,
             foreground_iou_interval=(0.7, 1.0),
             background_iou_interval=(0.0, 0.3),
         )

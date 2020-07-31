@@ -22,25 +22,20 @@ class RegressionLoss(tf.keras.losses.Loss):
 
 		self._huber = tf.keras.losses.Huber(reduction=tf.keras.losses.Reduction.NONE)
 
-	def __call__(self, target_class_labels, target_boxes_encoded, pred_boxes_encoded):
+	def __call__(self, target_boxes_encoded, pred_boxes_encoded):
 		'''
 		Args:
-			- target_class_labels: A tensor of shape [batch_size, num_samples_per_image, num_classes + 1] 
-				representing the target labels.
-			- target_boxes_encoded: A tensor of shape [batch_size, num_samples_per_image, 4]
+			- target_boxes_encoded: A tensor of shape [batch_size, num_samples_per_image, num_classes, 4]
 				representing the encoded target ground-truth bounding boxes.
 			- pred_boxes_encoded: A tensor of shape [batch_size, num_samples_per_image, num_classes, 4] 
 				representing the encoded predicted bounding boxess.
 		'''
-		foreground_inds = tf.where(target_class_labels[..., 0] == 0.0)
-		target_class_labels = tf.gather_nd(target_class_labels, foreground_inds)
-		target_boxes_encoded = tf.gather_nd(target_boxes_encoded, foreground_inds)
-		pred_boxes_encoded = tf.gather_nd(pred_boxes_encoded, foreground_inds) 
-
-		target_class_labels = target_class_labels[..., 1:]
-		pred_boxes_encoded = tf.gather_nd(pred_boxes_encoded, tf.where(target_class_labels == 1.0))
+		inds_to_keep = tf.where(tf.reduce_sum(target_boxes_encoded, axis=-1) != 0.0)
+		target_boxes_encoded = tf.gather_nd(target_boxes_encoded, inds_to_keep)
+		pred_boxes_encoded = tf.gather_nd(pred_boxes_encoded, inds_to_keep)
 
 		loss = self._huber(target_boxes_encoded, pred_boxes_encoded)
-		loss = tf.reduce_sum(loss, -1)
+		loss = tf.reduce_sum(loss, axis=-1)
+		loss = tf.reduce_mean(loss)
 
-		return tf.reduce_mean(loss)
+		return loss

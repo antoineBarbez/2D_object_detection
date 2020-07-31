@@ -45,7 +45,6 @@ class FastRCNNDetector(AbstractDetector):
 
         self._target_generator = TargetGenerator(
             image_shape=image_shape,
-            num_classes=num_classes,
             foreground_iou_interval=(0.5, 1.0),
             background_iou_interval=(0.0, 0.5),
         )
