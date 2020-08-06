@@ -7,7 +7,7 @@ class AbstractDetector(tf.keras.Model):
     """
     Abstract base class for object detectors
 
-    Here we call detector a model that outputs predictions from feature maps, 
+    Here we call detector a model that outputs predictions from feature maps,
     i.e., the output of a feature extractor.
     """
 

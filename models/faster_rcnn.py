@@ -47,14 +47,12 @@ class FasterRCNN(AbstractDetectionModel):
     def call(self, images, training=False):
         feature_maps = self.feature_extractor(images, training=training)
 
-        anchors, rpn_pred_objectness_scores, rpn_pred_boxes_encoded = self.rpn_detector(feature_maps, training=training)
+        rpn_output = self.rpn_detector(feature_maps, training=training)
 
-        rois, _ = self.rpn_detector.postprocess_output(
-            anchors, rpn_pred_objectness_scores, rpn_pred_boxes_encoded, training=training
-        )
-        rois, pred_class_scores, pred_boxes_encoded = self.fast_rcnn_detector(feature_maps, rois)
+        rois, _ = self.rpn_detector.postprocess_output(rpn_output, training=training)
+        rcnn_output = self.fast_rcnn_detector(feature_maps, rois)
 
-        return anchors, rpn_pred_objectness_scores, rpn_pred_boxes_encoded, rois, pred_class_scores, pred_boxes_encoded
+        return rpn_output, rcnn_output
 
     def postprocess_output(self, rois, pred_class_scores, pred_boxes_encoded, training=False):
         """
@@ -102,54 +100,36 @@ class FasterRCNN(AbstractDetectionModel):
             - pred_classes: predicted class indices.
         """
         with tf.GradientTape() as tape:
-            (
-                anchors,
-                rpn_pred_objectness_scores,
-                rpn_pred_boxes_encoded,
-                rois,
-                pred_class_scores,
-                pred_boxes_encoded,
-            ) = self(images, True)
-
-            # Get RPN training samples
-            (
-                rpn_target_objectness_labels_sample,
-                rpn_target_boxes_encoded_sample,
-                rpn_pred_objectness_scores_sample,
-                rpn_pred_boxes_encoded_sample,
-                _,
-            ) = self.rpn_detector.get_training_samples(
-                anchors, gt_class_labels, gt_boxes, rpn_pred_objectness_scores, rpn_pred_boxes_encoded
-            )
+            rpn_output, rcnn_output = self(images, True)
 
             # Get Fast RCNN training samples
-            (
-                target_class_labels_sample,
-                target_boxes_encoded_sample,
-                pred_class_scores_sample,
-                pred_boxes_encoded_sample,
-                _,
-            ) = self.fast_rcnn_detector.get_training_samples(
-                rois, gt_class_labels, gt_boxes, pred_class_scores, pred_boxes_encoded
-            )
+            rpn_training_samples = self.rpn_detector.get_training_samples(gt_class_labels, gt_boxes, rpn_output)
 
-            # Compute multi task loss
+            # Get Fast RCNN training samples
+            rcnn_training_samples = self.fast_rcnn_detector.get_training_samples(gt_class_labels, gt_boxes, rcnn_output)
+
+            # Get losses
             losses = {}
-            losses["rpn_cls"] = self._classification_loss(rpn_target_objectness_labels_sample, rpn_pred_objectness_scores_sample)
-            losses["rpn_reg"] = self._regression_loss(rpn_target_boxes_encoded_sample, rpn_pred_boxes_encoded_sample)
-            losses["rcnn_cls"] = self._classification_loss(target_class_labels_sample, pred_class_scores_sample)
-            losses["rcnn_reg"] = self._regression_loss(target_boxes_encoded_sample, pred_boxes_encoded_sample)
+            losses["rpn_cls"] = self._classification_loss(
+                rpn_training_samples["target_labels"], rpn_training_samples["pred_scores"]
+            )
+            losses["rpn_reg"] = self._regression_loss(
+                rpn_training_samples["target_boxes"], rpn_training_samples["pred_boxes"]
+            )
+            losses["rcnn_cls"] = self._classification_loss(
+                rcnn_training_samples["target_labels"], rcnn_training_samples["pred_scores"]
+            )
+            losses["rcnn_reg"] = self._regression_loss(
+                rcnn_training_samples["target_boxes"], rcnn_training_samples["pred_boxes"]
+            )
             multi_task_loss = sum(losses.values()) + sum(self.losses)
-
 
         gradients = tape.gradient(multi_task_loss, self.trainable_variables)
         optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
-        rpn_pred_boxes, rpn_pred_scores = self.rpn_detector.postprocess_output(
-            anchors, rpn_pred_objectness_scores, rpn_pred_boxes_encoded, training=True
-        )
-        rcnn_pred_boxes, rcnn_pred_scores, rcnn_pred_classes = self.postprocess_output(
-            rois, pred_class_scores, pred_boxes_encoded, training=True
+        rpn_pred_boxes, rpn_pred_scores = self.rpn_detector.postprocess_output(rpn_output, training=True)
+        rcnn_pred_boxes, rcnn_pred_scores, rcnn_pred_classes = self.fast_rcnn_detector.postprocess_output(
+            rcnn_output, training=True
         )
 
         preds = {
@@ -157,7 +137,7 @@ class FasterRCNN(AbstractDetectionModel):
             "rpn_scores": rpn_pred_scores,
             "rcnn_boxes": rcnn_pred_boxes,
             "rcnn_scores": rcnn_pred_scores,
-            "rcnn_classes": rcnn_pred_classes
+            "rcnn_classes": rcnn_pred_classes,
         }
 
         return losses, preds
@@ -182,49 +162,32 @@ class FasterRCNN(AbstractDetectionModel):
             - foreground_rois: RoIs labeled as foreground.
             - background_rois: RoIs labeled as background.
         """
-        (
-            anchors,
-            rpn_pred_objectness_scores,
-            rpn_pred_boxes_encoded,
-            rois,
-            pred_class_scores,
-            pred_boxes_encoded,
-        ) = self(images, False)
-
-        # Get RPN training samples
-        (
-            rpn_target_objectness_labels_sample,
-            rpn_target_boxes_encoded_sample,
-            rpn_pred_objectness_scores_sample,
-            rpn_pred_boxes_encoded_sample,
-            _,
-        ) = self.rpn_detector.get_training_samples(
-            anchors, gt_class_labels, gt_boxes, rpn_pred_objectness_scores, rpn_pred_boxes_encoded
-        )
+        rpn_output, rcnn_output = self(images, False)
 
         # Get Fast RCNN training samples
-        (
-            target_class_labels_sample,
-            target_boxes_encoded_sample,
-            pred_class_scores_sample,
-            pred_boxes_encoded_sample,
-            _,
-        ) = self.fast_rcnn_detector.get_training_samples(
-            rois, gt_class_labels, gt_boxes, pred_class_scores, pred_boxes_encoded
-        )
+        rpn_training_samples = self.rpn_detector.get_training_samples(gt_class_labels, gt_boxes, rpn_output)
+
+        # Get Fast RCNN training samples
+        rcnn_training_samples = self.fast_rcnn_detector.get_training_samples(gt_class_labels, gt_boxes, rcnn_output)
 
         # Get losses
         losses = {}
-        losses["rpn_cls"] = self._classification_loss(rpn_target_objectness_labels_sample, rpn_pred_objectness_scores_sample)
-        losses["rpn_reg"] = self._regression_loss(rpn_target_boxes_encoded_sample, rpn_pred_boxes_encoded_sample)
-        losses["rcnn_cls"] = self._classification_loss(target_class_labels_sample, pred_class_scores_sample)
-        losses["rcnn_reg"] = self._regression_loss(target_boxes_encoded_sample, pred_boxes_encoded_sample)
-
-        rpn_pred_boxes, rpn_pred_scores = self.rpn_detector.postprocess_output(
-            anchors, rpn_pred_objectness_scores, rpn_pred_boxes_encoded, training=False
+        losses["rpn_cls"] = self._classification_loss(
+            rpn_training_samples["target_labels"], rpn_training_samples["pred_scores"]
         )
-        rcnn_pred_boxes, rcnn_pred_scores, rcnn_pred_classes = self.postprocess_output(
-            rois, pred_class_scores, pred_boxes_encoded, training=False
+        losses["rpn_reg"] = self._regression_loss(
+            rpn_training_samples["target_boxes"], rpn_training_samples["pred_boxes"]
+        )
+        losses["rcnn_cls"] = self._classification_loss(
+            rcnn_training_samples["target_labels"], rcnn_training_samples["pred_scores"]
+        )
+        losses["rcnn_reg"] = self._regression_loss(
+            rcnn_training_samples["target_boxes"], rcnn_training_samples["pred_boxes"]
+        )
+
+        rpn_pred_boxes, rpn_pred_scores = self.rpn_detector.postprocess_output(rpn_output, training=False)
+        rcnn_pred_boxes, rcnn_pred_scores, rcnn_pred_classes = self.fast_rcnn_detector.postprocess_output(
+            rcnn_output, training=False
         )
 
         preds = {
@@ -232,7 +195,7 @@ class FasterRCNN(AbstractDetectionModel):
             "rpn_scores": rpn_pred_scores,
             "rcnn_boxes": rcnn_pred_boxes,
             "rcnn_scores": rcnn_pred_scores,
-            "rcnn_classes": rcnn_pred_classes
+            "rcnn_classes": rcnn_pred_classes,
         }
 
         return losses, preds

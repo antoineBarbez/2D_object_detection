@@ -1,4 +1,3 @@
-import numpy as np
 import tensorflow as tf
 import utils.images as image_utils
 import utils.metrics as metric_utils
@@ -58,7 +57,7 @@ def parse_args():
     parser.add_argument(
         "--decay-steps",
         nargs="*",
-        default=[15000, 80000],
+        default=[40000, 80000],
         type=int,
         help="List of steps at which we decay the learning rate, default=[40000]",
     )
@@ -120,26 +119,29 @@ def main():
     else:
         tf.print("Initializing from scratch.")
 
-
     # Start training
     for images, gt_classes, gt_boxes in dataset_train:
         checkpoint.step.assign_add(1)
         step = int(checkpoint.step)
 
         losses, preds = model.train_step(images, gt_classes, gt_boxes, optimizer)
-        
-        train_classification_loss(losses["rcnn_cls"])
-        train_regression_loss(losses["rcnn_reg"])
-        train_map_50(gt_boxes, gt_classes, preds["rcnn_boxes"], preds["rcnn_scores"], preds["rcnn_classes"])
-        rpn_train_classification_loss(losses["rpn_cls"])
-        rpn_train_regression_loss(losses["rpn_reg"])
-        rpn_train_ap_50(gt_boxes, preds["rpn_boxes"], preds["rpn_scores"])
+
+        train_classification_loss.update_state(losses["rcnn_cls"])
+        train_regression_loss.update_state(losses["rcnn_reg"])
+        train_map_50.update_state(
+            gt_boxes, gt_classes, preds["rcnn_boxes"], preds["rcnn_scores"], preds["rcnn_classes"]
+        )
+        rpn_train_classification_loss.update_state(losses["rpn_cls"])
+        rpn_train_regression_loss.update_state(losses["rpn_reg"])
+        rpn_train_ap_50.update_state(gt_boxes, preds["rpn_boxes"], preds["rpn_scores"])
 
         if step % args.num_steps_per_epoch == 0:
             epoch = step // args.num_steps_per_epoch
 
             with train_summary_writer.as_default():
-                tf.summary.scalar("Losses/Faster-RCNN/classification_loss", train_classification_loss.result(), step=step)
+                tf.summary.scalar(
+                    "Losses/Faster-RCNN/classification_loss", train_classification_loss.result(), step=step
+                )
                 tf.summary.scalar("Losses/Faster-RCNN/regression_loss", train_regression_loss.result(), step=step)
                 tf.summary.scalar("Metrics/Faster-RCNN/mAP@IoU=.50", train_map_50.result(), step=step)
                 tf.summary.scalar("Losses/RPN/classification_loss", rpn_train_classification_loss.result(), step=step)
@@ -150,12 +152,14 @@ def main():
                 for test_step, (images, gt_classes, gt_boxes) in dataset_valid.enumerate():
                     losses, preds = model.test_step(images, gt_classes, gt_boxes)
 
-                    valid_classification_loss(losses["rcnn_cls"])
-                    valid_regression_loss(losses["rcnn_reg"])
-                    valid_map_50(gt_boxes, gt_classes, preds["rcnn_boxes"], preds["rcnn_scores"], preds["rcnn_classes"])
-                    rpn_valid_classification_loss(losses["rpn_cls"])
-                    rpn_valid_regression_loss(losses["rpn_reg"])
-                    rpn_valid_ap_50(gt_boxes, preds["rpn_boxes"], preds["rpn_scores"])
+                    valid_classification_loss.update_state(losses["rcnn_cls"])
+                    valid_regression_loss.update_state(losses["rcnn_reg"])
+                    valid_map_50.update_state(
+                        gt_boxes, gt_classes, preds["rcnn_boxes"], preds["rcnn_scores"], preds["rcnn_classes"]
+                    )
+                    rpn_valid_classification_loss.update_state(losses["rpn_cls"])
+                    rpn_valid_regression_loss.update_state(losses["rpn_reg"])
+                    rpn_valid_ap_50.update_state(gt_boxes, preds["rpn_boxes"], preds["rpn_scores"])
 
                     if test_step == 0:
                         # Add ground-truth boxes
@@ -178,7 +182,10 @@ def main():
                                 image_predictions_50,
                                 tf.gather_nd(preds["rcnn_boxes"], tf.where(preds["rcnn_scores"] > 0.5)),
                                 scores=tf.gather_nd(preds["rcnn_scores"], tf.where(preds["rcnn_scores"] > 0.5)),
-                                class_indices=tf.cast(tf.gather_nd(preds["rcnn_classes"], tf.where(preds["rcnn_scores"] > 0.5)), dtype=tf.int32),
+                                class_indices=tf.cast(
+                                    tf.gather_nd(preds["rcnn_classes"], tf.where(preds["rcnn_scores"] > 0.5)),
+                                    dtype=tf.int32,
+                                ),
                                 class_names=class_names,
                                 relative=True,
                             )
@@ -192,7 +199,10 @@ def main():
                                 image_predictions_75,
                                 tf.gather_nd(preds["rcnn_boxes"], tf.where(preds["rcnn_scores"] > 0.75)),
                                 scores=tf.gather_nd(preds["rcnn_scores"], tf.where(preds["rcnn_scores"] > 0.75)),
-                                class_indices=tf.cast(tf.gather_nd(preds["rcnn_classes"], tf.where(preds["rcnn_scores"] > 0.75)), dtype=tf.int32),
+                                class_indices=tf.cast(
+                                    tf.gather_nd(preds["rcnn_classes"], tf.where(preds["rcnn_scores"] > 0.75)),
+                                    dtype=tf.int32,
+                                ),
                                 class_names=class_names,
                                 relative=True,
                             )
@@ -201,23 +211,29 @@ def main():
                             )
                             image_predictions_75.close()
 
-                tf.summary.scalar("Losses/Faster-RCNN/classification_loss", train_classification_loss.result(), step=step)
-                tf.summary.scalar("Losses/Faster-RCNN/regression_loss", train_regression_loss.result(), step=step)
-                tf.summary.scalar("Metrics/Faster-RCNN/mAP@IoU=.50", train_map_50.result(), step=step)
-                tf.summary.scalar("Losses/RPN/classification_loss", rpn_train_classification_loss.result(), step=step)
-                tf.summary.scalar("Losses/RPN/regression_loss", rpn_train_regression_loss.result(), step=step)
-                tf.summary.scalar("Metrics/RPN/AP@IoU=.50", rpn_train_ap_50.result(), step=step)
+                tf.summary.scalar(
+                    "Losses/Faster-RCNN/classification_loss", valid_classification_loss.result(), step=step
+                )
+                tf.summary.scalar("Losses/Faster-RCNN/regression_loss", valid_regression_loss.result(), step=step)
+                tf.summary.scalar("Metrics/Faster-RCNN/mAP@IoU=.50", valid_map_50.result(), step=step)
+                tf.summary.scalar("Losses/RPN/classification_loss", rpn_valid_classification_loss.result(), step=step)
+                tf.summary.scalar("Losses/RPN/regression_loss", rpn_valid_regression_loss.result(), step=step)
+                tf.summary.scalar("Metrics/RPN/AP@IoU=.50", rpn_valid_ap_50.result(), step=step)
 
             # Print metrics of the epoch
             epoch_summary = f"Epoch {epoch}/{args.num_steps // args.num_steps_per_epoch}: \n"
             epoch_summary += "\tFaster-RCNN: \n"
             epoch_summary += f"\t\tCls Loss       --> Train: {train_classification_loss.result():.2f}, Valid: {valid_classification_loss.result():.2f}\n"
             epoch_summary += f"\t\tReg Loss       --> Train: {train_regression_loss.result():.2f}, Valid: {valid_regression_loss.result():.2f}\n"
-            epoch_summary += f"\t\tmAP at IoU=.50 --> Train: {train_map_50.result():.2f}, Valid: {valid_map_50.result():.2f}\n"
+            epoch_summary += (
+                f"\t\tmAP at IoU=.50 --> Train: {train_map_50.result():.2f}, Valid: {valid_map_50.result():.2f}\n"
+            )
             epoch_summary += "\tRPN: \n"
             epoch_summary += f"\t\tCls Loss       --> Train: {rpn_train_classification_loss.result():.2f}, Valid: {rpn_valid_classification_loss.result():.2f}\n"
             epoch_summary += f"\t\tReg Loss       --> Train: {rpn_train_regression_loss.result():.2f}, Valid: {rpn_valid_regression_loss.result():.2f}\n"
-            epoch_summary += f"\t\tAP at IoU=.50  --> Train: {rpn_train_ap_50.result():.2f}, Valid: {rpn_valid_ap_50.result():.2f}\n"
+            epoch_summary += (
+                f"\t\tAP at IoU=.50  --> Train: {rpn_train_ap_50.result():.2f}, Valid: {rpn_valid_ap_50.result():.2f}\n"
+            )
             tf.print(epoch_summary)
 
             # Reset metric objects
@@ -243,7 +259,6 @@ def main():
         if step == args.num_steps:
             model.save_weights(os.path.join(args.save_dir, "faster-rcnn", "weights"), save_format="tf")
             break
-
 
 
 if __name__ == "__main__":

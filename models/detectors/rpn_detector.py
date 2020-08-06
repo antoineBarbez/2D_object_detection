@@ -79,29 +79,31 @@ class RPNDetector(AbstractDetector):
         )
 
         self._target_generator = TargetGenerator(
-            image_shape=image_shape,
-            foreground_iou_interval=(0.7, 1.0),
-            background_iou_interval=(0.0, 0.3),
+            image_shape=image_shape, foreground_iou_interval=(0.7, 1.0), background_iou_interval=(0.0, 0.3),
         )
 
     @property
     def anchors(self):
         return self._anchors
 
-    def call(self, feature_maps, training):
+    def call(self, feature_maps, training=False):
         """
         Args:
-            - feature_maps: Output of the feature extractor.
-            - training: A boolean indicating whether the training version of the
+            - feature_maps: Tensor of shape [batch_size, im_height, im_width, channels].
+                Output of the feature extractor.
+            - training: Boolean value indicating whether the training version of the
                 computation graph should be constructed.
 
         Returns:
-            - anchors: Anchor boxes to be used for postprocessing, shape = [num_anchors, 4].
-            - pred_class_scores: Output of the classification head. A tensor of shape 
-                [batch_size, num_anchors, 2] representing classification scores for each anchor.
-            - pred_boxes_encoded: Output of the regression head. A tensor of shape 
-                [batch_size, num_anchors, 1, 4] representing encoded predicted box 
-                coordinates for each anchor.
+            Dictionary with keys:
+                - regions: Tensor of shape [num_anchors, 4].
+                    Anchor boxes to be used for postprocessing.
+                - pred_scores: Tensor of shape [batch_size, num_anchors, 2].
+                    Output of the classification head, representing classification
+                    scores for each anchor.
+                - pred_boxes: Tensor of shape [batch_size, num_anchors, 1, 4].
+                    Output of the regression head, representing encoded predicted box
+                    coordinates for each anchor.
         """
         features = self._intermediate_layer(feature_maps)
 
@@ -120,48 +122,53 @@ class RPNDetector(AbstractDetector):
             image_height, image_width, _ = self._image_shape
             anchors = box_utils.clip_to_window(self._anchors, [0, 0, image_width, image_height])
 
-        return anchors, pred_class_scores, pred_boxes_encoded
+        output = {}
+        output["regions"] = anchors
+        output["pred_scores"] = pred_class_scores
+        output["pred_boxes"] = pred_boxes_encoded
+        return output
 
-    def get_training_samples(self, anchors, gt_class_labels, gt_boxes, pred_class_scores, pred_boxes_encoded):
+    def get_training_samples(self, gt_class_labels, gt_boxes, output):
         gt_objectness_labels = tf.one_hot(indices=tf.cast(tf.reduce_sum(gt_class_labels, -1), dtype=tf.int32), depth=2)
 
         target_objectness_labels, target_boxes_encoded = tf.map_fn(
-            fn=lambda x: self._target_generator.generate_targets(x[0], x[1], anchors),
+            fn=lambda x: self._target_generator.generate_targets(x[0], x[1], output["regions"]),
             elems=(gt_objectness_labels, gt_boxes),
             dtype=(tf.float32, tf.float32),
         )
 
-        return tf.map_fn(
-            fn=lambda x: sampling_utils.sample_image(x[0], x[1], x[2], x[3], anchors, 256, 0.5),
-            elems=(target_objectness_labels, target_boxes_encoded, pred_class_scores, pred_boxes_encoded),
-            dtype=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+        sample_indices = tf.map_fn(
+            fn=lambda y: sampling_utils.sample_image(y, 256, 0.5), elems=target_objectness_labels, dtype=tf.int64,
         )
 
-    def postprocess_output(self, anchors, pred_class_scores, pred_boxes_encoded, training):
+        samples = {}
+        samples["target_labels"] = tf.gather(target_objectness_labels, sample_indices, batch_dims=1)
+        samples["pred_scores"] = tf.gather(output["pred_scores"], sample_indices, batch_dims=1)
+        samples["target_boxes"] = tf.gather(target_boxes_encoded, sample_indices, batch_dims=1)
+        samples["pred_boxes"] = tf.gather(output["pred_boxes"], sample_indices, batch_dims=1)
+        return samples
+
+    def postprocess_output(self, output, training):
         """
         Postprocess the output of the RPN
 
         Args:
-            - anchors: A tensor of shape [num_anchors, 4] representing the anchor boxes.
-            - pred_class_scores: Output of the classification head. A tensor of shape 
-                [batch_size, num_anchors, 2] representing classification scores.
-            - pred_boxes_encoded: Output of the regression head. A tensor of shape
-                [batch_size, num_anchors, 1, 4] representing encoded predicted box coordinates.
+            - output: Output dictionary of the call function.
             - training: A boolean value indicating whether we are in training mode.
 
         Returns:
-            - rois: A tensor of shape [batch_size, max_predictions, 4] possibly zero padded 
+            - rois: Tensor of shape [batch_size, max_predictions, 4] possibly zero padded 
                 representing region proposals.
-            - roi_scores: A tensor of shape [batch_size, max_predictions] possibly zero padded 
+            - roi_scores: Tensor of shape [batch_size, max_predictions] possibly zero padded 
                 representing objectness scores for each proposal.
         """
         max_predictions = 500 if training else 300
 
         nmsed_boxes, nmsed_scores, _, _ = postprocess_utils.postprocess_output(
-            regions=anchors,
+            regions=output["regions"],
             image_shape=self._image_shape,
-            pred_class_scores=pred_class_scores,
-            pred_boxes_encoded=pred_boxes_encoded,
+            pred_class_scores=output["pred_scores"],
+            pred_boxes_encoded=output["pred_boxes"],
             max_output_size_per_class=max_predictions,
             max_total_size=max_predictions,
             iou_threshold=0.7,
@@ -171,15 +178,14 @@ class RPNDetector(AbstractDetector):
 
     def _remove_invalid_anchors_and_predictions(self, pred_class_scores, pred_boxes_encoded):
         """
-        Remove anchors that overlap with the image boundaries, as well as 
+        Remove anchors that overlap with the image boundaries, as well as
         the corresponding predictions.
 
         Args:
-            - pred_class_scores: Output of the classification head. A tensor of shape 
-                [batch_size, num_anchors, 2] representing classification scores for each anchor.
-            - pred_boxes_encoded: Output of the regression head. A tensor of shape 
-                [batch_size, num_anchors, 1, 4] representing encoded predicted box coordinates 
-                for each anchor.
+            - pred_class_scores: Tensor of shape [batch_size, num_anchors, 2].
+                Output of the classification head.
+            - pred_boxes_encoded: Tensor of shape [batch_size, num_anchors, 1, 4].
+                Output of the regression head.
 
         Returns:
             filtered anchors, pred_class_scores, and pred_boxes_encoded.

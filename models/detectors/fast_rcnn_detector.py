@@ -44,28 +44,25 @@ class FastRCNNDetector(AbstractDetector):
         self._image_shape = image_shape
 
         self._target_generator = TargetGenerator(
-            image_shape=image_shape,
-            foreground_iou_interval=(0.5, 1.0),
-            background_iou_interval=(0.0, 0.5),
+            image_shape=image_shape, foreground_iou_interval=(0.5, 1.0), background_iou_interval=(0.0, 0.5),
         )
 
     def call(self, feature_maps, rois):
         """
         Args:
-            - feature_maps: Output of the feature extractor. A tensor of shape 
-                [batch_size, height, width, channels].
-            - rois: A tensor of shape [batch_size, num_rois, 4] representing the 
+            - feature_maps: Tensor of shape [batch_size, im_height, im_width, channels].
+                Output of the feature extractor.
+            - rois: Tensor of shape [batch_size, num_rois, 4] representing the
                 Regions of interest in relative coordinates.
 
         Returns:
-            - rois: Regions to be used for postprocessing in absolute coordinates.
-                Shape = [batch_size, num_rois, 4].
-            - pred_class_scores: Output of the classification head. A tensor of shape 
-                [batch_size, num_rois, num_classes + 1] representing classification scores 
-                for each Region of Interest.
-            - pred_boxes_encoded: Output of the regression head. A tensor of shape 
-                [batch_size, num_rois, num_classes, 4] representing encoded predicted box 
-                coordinates for each Region of Interest.
+            Dictionary with keys:
+                - regions: Tensor of shape [batch_size, num_rois, 4]. Regions to be used for 
+                    postprocessing in absolute coordinates.
+                - pred_scores: Tensor of shape [batch_size, num_rois, num_classes + 1].
+                    Output of the classification head representing classification scores.
+                - pred_boxes: Tensor of shape [batch_size, num_rois, num_classes, 4].
+                    Output of the regression head representing encoded predicted box.
         """
         pooled_features_flat = self._roi_pooling(feature_maps, rois, True, True)
 
@@ -76,22 +73,31 @@ class FastRCNNDetector(AbstractDetector):
 
         rois = box_utils.to_absolute(rois, self._image_shape)
 
-        return rois, pred_class_scores, pred_boxes_encoded
+        output = {}
+        output["regions"] = rois
+        output["pred_scores"] = pred_class_scores
+        output["pred_boxes"] = pred_boxes_encoded
+        return output
 
-    def get_training_samples(self, rois, gt_class_labels, gt_boxes, pred_class_scores, pred_boxes_encoded):
+    def get_training_samples(self, gt_class_labels, gt_boxes, output):
         target_class_labels, target_boxes_encoded = tf.map_fn(
             fn=lambda x: self._target_generator.generate_targets(x[0], x[1], x[2]),
-            elems=(gt_class_labels, gt_boxes, rois),
+            elems=(gt_class_labels, gt_boxes, output["regions"]),
             dtype=(tf.float32, tf.float32),
         )
 
-        return tf.map_fn(
-            fn=lambda x: sampling_utils.sample_image(x[0], x[1], x[2], x[3], x[4], 64, 0.25),
-            elems=(target_class_labels, target_boxes_encoded, pred_class_scores, pred_boxes_encoded, rois),
-            dtype=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+        sample_indices = tf.map_fn(
+            fn=lambda y: sampling_utils.sample_image(y, 64, 0.25), elems=target_class_labels, dtype=tf.int64,
         )
 
-    def postprocess_output(self, rois, pred_class_scores, pred_boxes_encoded, training):
+        samples = {}
+        samples["target_labels"] = tf.gather(target_class_labels, sample_indices, batch_dims=1)
+        samples["pred_scores"] = tf.gather(output["pred_scores"], sample_indices, batch_dims=1)
+        samples["target_boxes"] = tf.gather(target_boxes_encoded, sample_indices, batch_dims=1)
+        samples["pred_boxes"] = tf.gather(output["pred_boxes"], sample_indices, batch_dims=1)
+        return samples
+
+    def postprocess_output(self, output, training):
         """
         Postprocess the output of the Faster-RCNN
 
@@ -117,10 +123,10 @@ class FastRCNNDetector(AbstractDetector):
         """
 
         nmsed_boxes, nmsed_scores, nmsed_classes, _ = postprocess_utils.postprocess_output(
-            regions=rois,
+            regions=output["regions"],
             image_shape=self._image_shape,
-            pred_class_scores=pred_class_scores,
-            pred_boxes_encoded=pred_boxes_encoded,
+            pred_class_scores=output["pred_scores"],
+            pred_boxes_encoded=output["pred_boxes"],
             max_output_size_per_class=100,
             max_total_size=300,
             iou_threshold=0.6,
