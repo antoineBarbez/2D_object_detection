@@ -1,0 +1,44 @@
+{
+    "num_classes": 7,
+    "image_shape": [600, 1987, 3],
+    "rpn": {
+        "window_size": 3,
+        "weight_decay": 0.0005,
+        "anchors": {
+            "scales": [0.25, 0.5, 1.0, 2.0],
+            "aspect_ratios": [0.5, 1.0, 2.0],
+            "base_anchor_shape": [256, 256]
+        },
+        "sampling": {
+            "foreground_iou_interval": [0.7, 1.0],
+            "background_iou_interval": [0.0, 0.3],
+            "num_samples": 256,
+            "foreground_proportion": 0.5  
+        },
+        "nms": {
+            "score_threshold": 0.0,
+            "iou_threshold": 0.7,
+            "max_output_size_per_class": 300,
+            "max_total_size": 300
+        }
+    },
+    "rcnn": {
+        "weight_decay": 0.0005,
+        "roi_pooling": {
+            "pooled_size": 7, 
+            "kernel_size": 2
+        },
+        "sampling": {
+            "foreground_iou_interval": [0.5, 1.0],
+            "background_iou_interval": [0.0, 0.5],
+            "num_samples": 64,
+            "foreground_proportion": 0.25
+        },
+        "nms": {
+            "score_threshold": 0.0,
+            "iou_threshold": 0.6,
+            "max_output_size_per_class": 100,
+            "max_total_size": 300
+        }
+    }
+}

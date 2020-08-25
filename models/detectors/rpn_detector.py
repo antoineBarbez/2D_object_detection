@@ -1,43 +1,31 @@
 import tensorflow as tf
-import utils.anchors as anchor_utils
-import utils.boxes as box_utils
-import utils.post_processing as postprocess_utils
-import utils.sampling as sampling_utils
 
-from models.detectors.abstract_detector import AbstractDetector
-from utils.targets import TargetGenerator
+from utils.boxes import clip_to_window
+from utils.training import generate_targets, get_sample_indices
 
 
-class RPNDetector(AbstractDetector):
+class RPNDetector(tf.keras.Model):
     def __init__(
-        self,
-        image_shape,
-        grid_shape,
-        window_size,
-        scales,
-        aspect_ratios,
-        base_anchor_shape,
-        name="region_proposal_network_detector",
+        self, image_shape, feature_maps_shape, config, name="region_proposal_network_detector",
     ):
         """
-        Instantiate a Region Proposal Network.
+        Instantiate a Region Proposal Network detector.
 
         Args:
             - image_shape: Shape of the input images.
-            - grid_shape: Tuple of integers. Shape of the anchors grid, 
-                i.e., height and width of the feature maps.
-            - window_size: Size of the sliding window.
-            - scales: Anchors' scales.
-            - aspect_ratios: Anchors' aspect ratios.
-            - base_anchor_shape: Tuple of integers. Shape of the base anchor. 
+            - feature_maps_shape: Output shape of the feature extractor.
+            - config: Region proposal network configuration dictionary.
         """
         super(RPNDetector, self).__init__(name=name)
+        self._image_shape = image_shape
+        _, grid_height, grid_width, _ = feature_maps_shape
+        self._anchors = self._generate_anchors(grid_shape=(grid_height, grid_width), **config["anchors"])
 
         initializer = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.01)
-        regularizer = tf.keras.regularizers.l2(0.0005)
+        regularizer = tf.keras.regularizers.l2(config["weight_decay"])
         self._intermediate_layer = tf.keras.layers.Conv2D(
             filters=256,
-            kernel_size=window_size,
+            kernel_size=config["window_size"],
             padding="same",
             activation="relu",
             kernel_initializer=initializer,
@@ -45,7 +33,7 @@ class RPNDetector(AbstractDetector):
             name="rpn_intermediate_layer",
         )
 
-        num_anchors_per_location = len(scales) * len(aspect_ratios)
+        num_anchors_per_location = len(config["anchors"]["scales"]) * len(config["anchors"]["aspect_ratios"])
         self._cls_layer = tf.keras.layers.Conv2D(
             filters=2 * num_anchors_per_location,
             kernel_size=1,
@@ -69,27 +57,10 @@ class RPNDetector(AbstractDetector):
         )
         self._reg_reshape = tf.keras.layers.Reshape(target_shape=(-1, 1, 4), name="rpn_regression_head_reshape")
 
-        self._image_shape = image_shape
-        self._anchors = anchor_utils.generate_anchors(
-            scales=scales,
-            aspect_ratios=aspect_ratios,
-            grid_shape=grid_shape,
-            stride_shape=(16, 16),
-            base_anchor_shape=base_anchor_shape,
-        )
-
-        self._target_generator = TargetGenerator(
-            image_shape=image_shape, foreground_iou_interval=(0.7, 1.0), background_iou_interval=(0.0, 0.3),
-        )
-
-    @property
-    def anchors(self):
-        return self._anchors
-
     def call(self, feature_maps, training=False):
         """
         Args:
-            - feature_maps: Tensor of shape [batch_size, im_height, im_width, channels].
+            - feature_maps: Tensor of shape [batch_size, height, width, channels].
                 Output of the feature extractor.
             - training: Boolean value indicating whether the training version of the
                 computation graph should be constructed.
@@ -107,82 +78,133 @@ class RPNDetector(AbstractDetector):
         """
         features = self._intermediate_layer(feature_maps)
 
-        pred_class_scores = self._cls_layer(features)
-        pred_class_scores = self._cls_reshape(pred_class_scores)
-        pred_class_scores = self._cls_activation(pred_class_scores)
+        pred_scores = self._cls_layer(features)
+        pred_scores = self._cls_reshape(pred_scores)
+        pred_scores = self._cls_activation(pred_scores)
 
         pred_boxes_encoded = self._reg_layer(features)
         pred_boxes_encoded = self._reg_reshape(pred_boxes_encoded)
 
         if training:
-            anchors, pred_class_scores, pred_boxes_encoded = self._remove_invalid_anchors_and_predictions(
-                pred_class_scores, pred_boxes_encoded
+            anchors, pred_scores, pred_boxes_encoded = self._remove_invalid_anchors_and_predictions(
+                pred_scores, pred_boxes_encoded
             )
         else:
             image_height, image_width, _ = self._image_shape
-            anchors = box_utils.clip_to_window(self._anchors, [0, 0, image_width, image_height])
+            anchors = clip_to_window(self._anchors, [0, 0, image_width, image_height])
 
-        output = {}
-        output["regions"] = anchors
-        output["pred_scores"] = pred_class_scores
-        output["pred_boxes"] = pred_boxes_encoded
-        return output
+        return {"regions": anchors, "pred_scores": pred_scores, "pred_boxes": pred_boxes_encoded}
 
-    def get_training_samples(self, gt_class_labels, gt_boxes, output):
-        gt_objectness_labels = tf.one_hot(indices=tf.cast(tf.reduce_sum(gt_class_labels, -1), dtype=tf.int32), depth=2)
+    def get_training_samples(
+        self,
+        gt_labels,
+        gt_boxes,
+        regions,
+        pred_scores,
+        pred_boxes,
+        foreground_iou_interval,
+        background_iou_interval,
+        num_samples,
+        foreground_proportion,
+    ):
+        """
+        Args:
+            - gt_labels: A tensor of shape [batch_size, max_num_objects, num_classes + 1] representing the
+                ground-truth class labels possibly passed with zeros.
+            - gt_boxes: A tensor of shape [batch_size, max_num_objects, 4] representing the
+                ground-truth bounding boxes possibly passed with zeros.
+            - regions: Tensor of shape [num_anchors, 4], representing the reference anchor boxes.
+            - pred_scores: Tensor of shape [batch_size, num_anchors, 2].
+                Output of the classification head, representing classification
+                scores for each anchor.
+            - pred_boxes: Tensor of shape [batch_size, num_anchors, 1, 4].
+                Output of the regression head, representing encoded predicted box
+                coordinates for each anchor.
+            - foreground_iou_interval: Regions that have an IoU overlap with a ground-truth
+                bounding box in this interval are labeled as foreground. Note that if there are no regions
+                within this interval, the region with the highest IoU with any ground truth box will be labeled
+                as foreground to ensure that there is always at least one positive example per image.
+            - background_iou_interval: Regions that have an IoU overlap with a ground-truth
+                bounding box in this interval are labeled as background. Regions that are neither labeled as
+                foreground, nor background are ignored.
+            - num_samples: Number of examples (regions) to sample per image.
+            - foreground_proportion: Maximum proportion of foreground vs background
+                examples to sample per image.
 
-        target_objectness_labels, target_boxes_encoded = tf.map_fn(
-            fn=lambda x: self._target_generator.generate_targets(x[0], x[1], output["regions"]),
+        Returns:
+            Dictionary containing the randomly sampled targets and predictions to be used for computing the loss:
+                - target_labels: Tensor of shape [batch_size, num_samples, 2].
+                - pred_scores: Tensor of shape [batch_size, num_samples, 2].
+                - target_boxes: Tensor of shape [batch_size, num_samples, 1, 4].
+                - pred_boxes: Tensor of shape [batch_size, num_samples, 1, 4].
+        """
+        gt_objectness_labels = tf.one_hot(indices=tf.cast(tf.reduce_sum(gt_labels, -1), dtype=tf.int32), depth=2)
+
+        target_labels, target_boxes_encoded = tf.map_fn(
+            fn=lambda x: generate_targets(
+                x[0], x[1], regions, self._image_shape, foreground_iou_interval, background_iou_interval
+            ),
             elems=(gt_objectness_labels, gt_boxes),
             dtype=(tf.float32, tf.float32),
         )
 
         sample_indices = tf.map_fn(
-            fn=lambda y: sampling_utils.sample_image(y, 256, 0.5), elems=target_objectness_labels, dtype=tf.int64,
+            fn=lambda l: get_sample_indices(l, num_samples, foreground_proportion), elems=target_labels, dtype=tf.int64,
         )
 
         samples = {}
-        samples["target_labels"] = tf.gather(target_objectness_labels, sample_indices, batch_dims=1)
-        samples["pred_scores"] = tf.gather(output["pred_scores"], sample_indices, batch_dims=1)
+        samples["target_labels"] = tf.gather(target_labels, sample_indices, batch_dims=1)
+        samples["pred_scores"] = tf.gather(pred_scores, sample_indices, batch_dims=1)
         samples["target_boxes"] = tf.gather(target_boxes_encoded, sample_indices, batch_dims=1)
-        samples["pred_boxes"] = tf.gather(output["pred_boxes"], sample_indices, batch_dims=1)
+        samples["pred_boxes"] = tf.gather(pred_boxes, sample_indices, batch_dims=1)
         return samples
 
-    def postprocess_output(self, output, training):
+    def _generate_anchors(self, grid_shape, scales, aspect_ratios, base_anchor_shape, stride_shape=(16, 16)):
         """
-        Postprocess the output of the RPN
+        Creates the anchor boxes
 
         Args:
-            - output: Output dictionary of the call function.
-            - training: A boolean value indicating whether we are in training mode.
+            - grid_shape: Shape of the anchors grid, i.e., feature maps grid shape.
+            - scales: Anchors scales.
+            - aspect_ratios: Anchors aspect ratios.
+            - base_anchor_shape: Shape of the base anchor.
+            - stride_shape: Shape of a pixel projected in the input image.
 
-        Returns:
-            - rois: Tensor of shape [batch_size, max_predictions, 4] possibly zero padded 
-                representing region proposals.
-            - roi_scores: Tensor of shape [batch_size, max_predictions] possibly zero padded 
-                representing objectness scores for each proposal.
+        Returns
+            A Tensor of shape [num_anchors, 4] representing the box coordinates of the anchors.
+            Nb: num_anchors = grid_shape[0] * grid_shape[1] * len(self.scales) * len(self.aspect_ratios)
         """
-        max_predictions = 500 if training else 300
 
-        nmsed_boxes, nmsed_scores, _, _ = postprocess_utils.postprocess_output(
-            regions=output["regions"],
-            image_shape=self._image_shape,
-            pred_class_scores=output["pred_scores"],
-            pred_boxes_encoded=output["pred_boxes"],
-            max_output_size_per_class=max_predictions,
-            max_total_size=max_predictions,
-            iou_threshold=0.7,
-        )
+        scales, aspect_ratios = tf.meshgrid(scales, aspect_ratios)
+        scales = tf.reshape(scales, [-1])
+        aspect_ratios = tf.reshape(aspect_ratios, [-1])
 
-        return nmsed_boxes, nmsed_scores
+        ratio_sqrts = tf.sqrt(aspect_ratios)
+        heights = scales / ratio_sqrts * base_anchor_shape[0]
+        widths = scales * ratio_sqrts * base_anchor_shape[1]
 
-    def _remove_invalid_anchors_and_predictions(self, pred_class_scores, pred_boxes_encoded):
+        x_centers = tf.range(grid_shape[1], dtype=tf.float32) * stride_shape[1]
+        y_centers = tf.range(grid_shape[0], dtype=tf.float32) * stride_shape[0]
+        x_centers, y_centers = tf.meshgrid(x_centers, y_centers)
+
+        widths, x_centers = tf.meshgrid(widths, x_centers)
+        heights, y_centers = tf.meshgrid(heights, y_centers)
+
+        centers = tf.stack([x_centers, y_centers], axis=2)
+        centers = tf.reshape(centers, [-1, 2])
+
+        sizes = tf.stack([widths, heights], axis=2)
+        sizes = tf.reshape(sizes, [-1, 2])
+
+        return tf.concat([centers - 0.5 * sizes, centers + 0.5 * sizes], 1)
+
+    def _remove_invalid_anchors_and_predictions(self, pred_scores, pred_boxes_encoded):
         """
         Remove anchors that overlap with the image boundaries, as well as
         the corresponding predictions.
 
         Args:
-            - pred_class_scores: Tensor of shape [batch_size, num_anchors, 2].
+            - pred_scores: Tensor of shape [batch_size, num_anchors, 2].
                 Output of the classification head.
             - pred_boxes_encoded: Tensor of shape [batch_size, num_anchors, 1, 4].
                 Output of the regression head.
@@ -202,7 +224,7 @@ class RPNDetector(AbstractDetector):
         )
 
         anchors = tf.gather(self._anchors, inds_to_keep)
-        pred_class_scores = tf.gather(pred_class_scores, inds_to_keep, axis=1)
+        pred_scores = tf.gather(pred_scores, inds_to_keep, axis=1)
         pred_boxes_encoded = tf.gather(pred_boxes_encoded, inds_to_keep, axis=1)
 
-        return anchors, pred_class_scores, pred_boxes_encoded
+        return anchors, pred_scores, pred_boxes_encoded

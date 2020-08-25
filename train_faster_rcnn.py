@@ -4,6 +4,7 @@ import utils.metrics as metric_utils
 
 import argparse
 import datetime
+import json
 import os
 
 from PIL import Image
@@ -40,6 +41,9 @@ def parse_args():
     parser.add_argument(
         "--checkpoints-dir", default="checkpoints", type=str, help="Path to the directory where to store checkpoints",
     )
+    parser.add_argument(
+        "--config-file", default="config.json", type=str, help="Path to the configuration file",
+    )
     parser.add_argument("--num-steps", default=100000, type=int, help="Number of parameters update, default=70000")
     parser.add_argument(
         "--num-steps-per-epoch", default=500, type=int, help="Number of steps to complete an epoch, default=500"
@@ -65,12 +69,12 @@ def parse_args():
 
 
 def main():
-    num_classes = len(class_names)
-    image_shape = (600, 1987, 3)
-
     args = parse_args()
 
-    pipeline_creator = InputPipelineCreator(num_classes=num_classes, image_shape=image_shape)
+    with open(args.config_file, "r") as config_file:
+        config = json.load(config_file)
+
+    pipeline_creator = InputPipelineCreator(num_classes=config["num_classes"], image_shape=config["image_shape"])
     dataset_train = pipeline_creator.create_input_pipeline(
         filename=args.train_data_path, batch_size=args.batch_size, training=True
     )
@@ -79,7 +83,7 @@ def main():
     # Setup metrics
     train_classification_loss = tf.keras.metrics.Mean(name="train_classification_loss")
     train_regression_loss = tf.keras.metrics.Mean(name="train_regression_loss")
-    train_map_50 = metric_utils.MeanAveragePrecision(num_classes, 0.5, name="train_mAP@IoU=.50")
+    train_map_50 = metric_utils.MeanAveragePrecision(config["num_classes"], 0.5, name="train_mAP@IoU=.50")
 
     rpn_train_classification_loss = tf.keras.metrics.Mean(name="rpn_train_classification_loss")
     rpn_train_regression_loss = tf.keras.metrics.Mean(name="rpn_train_regression_loss")
@@ -87,7 +91,7 @@ def main():
 
     valid_classification_loss = tf.keras.metrics.Mean(name="valid_classification_loss")
     valid_regression_loss = tf.keras.metrics.Mean(name="valid_regression_loss")
-    valid_map_50 = metric_utils.MeanAveragePrecision(num_classes, 0.5, name="valid_mAP@IoU=.50")
+    valid_map_50 = metric_utils.MeanAveragePrecision(config["num_classes"], 0.5, name="valid_mAP@IoU=.50")
 
     rpn_valid_classification_loss = tf.keras.metrics.Mean(name="rpn_valid_classification_loss")
     rpn_valid_regression_loss = tf.keras.metrics.Mean(name="rpn_valid_regression_loss")
@@ -106,7 +110,7 @@ def main():
     )
     optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9)
 
-    model = FasterRCNN(image_shape, num_classes)
+    model = FasterRCNN(config)
 
     checkpoint = tf.train.Checkpoint(step=tf.Variable(0), optimizer=optimizer, model=model)
     manager = tf.train.CheckpointManager(
@@ -182,10 +186,7 @@ def main():
                                 image_predictions_50,
                                 tf.gather_nd(preds["rcnn_boxes"], tf.where(preds["rcnn_scores"] > 0.5)),
                                 scores=tf.gather_nd(preds["rcnn_scores"], tf.where(preds["rcnn_scores"] > 0.5)),
-                                class_indices=tf.cast(
-                                    tf.gather_nd(preds["rcnn_classes"], tf.where(preds["rcnn_scores"] > 0.5)),
-                                    dtype=tf.int32,
-                                ),
+                                class_indices=tf.gather_nd(preds["rcnn_classes"], tf.where(preds["rcnn_scores"] > 0.5)),
                                 class_names=class_names,
                                 relative=True,
                             )
@@ -199,9 +200,8 @@ def main():
                                 image_predictions_75,
                                 tf.gather_nd(preds["rcnn_boxes"], tf.where(preds["rcnn_scores"] > 0.75)),
                                 scores=tf.gather_nd(preds["rcnn_scores"], tf.where(preds["rcnn_scores"] > 0.75)),
-                                class_indices=tf.cast(
-                                    tf.gather_nd(preds["rcnn_classes"], tf.where(preds["rcnn_scores"] > 0.75)),
-                                    dtype=tf.int32,
+                                class_indices=tf.gather_nd(
+                                    preds["rcnn_classes"], tf.where(preds["rcnn_scores"] > 0.75)
                                 ),
                                 class_names=class_names,
                                 relative=True,

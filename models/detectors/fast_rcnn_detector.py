@@ -1,27 +1,26 @@
 import tensorflow as tf
-import utils.boxes as box_utils
-import utils.post_processing as postprocess_utils
-import utils.sampling as sampling_utils
 
-from models.detectors.abstract_detector import AbstractDetector
-from utils.targets import TargetGenerator
+from utils.boxes import to_absolute
+from utils.training import generate_targets, get_sample_indices
 
 
-class FastRCNNDetector(AbstractDetector):
-    def __init__(self, image_shape, num_classes, name="fast_rcnn_detector"):
+class FastRCNNDetector(tf.keras.Model):
+    def __init__(self, image_shape, num_classes, config, name="fast_rcnn_detector"):
         """
         Instantiate a Fast-RCNN detector.
 
         Args:
             - image_shape: Shape of the input images.
             - num_classes: Number of classes without background.
+            - config: Fast RCNN configuration dictionary.
         """
         super(FastRCNNDetector, self).__init__(name=name)
+        self._image_shape = image_shape
 
         initializer = tf.keras.initializers.VarianceScaling(scale=1.0, mode="fan_avg", distribution="uniform")
-        regularizer = tf.keras.regularizers.l2(0.0005)
+        regularizer = tf.keras.regularizers.l2(config["weight_decay"])
 
-        self._roi_pooling = ROIPooling(pooled_size=5, kernel_size=2, name="regions_of_interest_pooling")
+        self._roi_pooling = ROIPooling(name="regions_of_interest_pooling", **config["roi_pooling"])
 
         self._cls_layer = tf.keras.layers.Dense(
             units=num_classes + 1,
@@ -41,12 +40,6 @@ class FastRCNNDetector(AbstractDetector):
             target_shape=(-1, num_classes, 4), name="fast_rcnn_regression_head_reshape"
         )
 
-        self._image_shape = image_shape
-
-        self._target_generator = TargetGenerator(
-            image_shape=image_shape, foreground_iou_interval=(0.5, 1.0), background_iou_interval=(0.0, 0.5),
-        )
-
     def call(self, feature_maps, rois):
         """
         Args:
@@ -57,82 +50,84 @@ class FastRCNNDetector(AbstractDetector):
 
         Returns:
             Dictionary with keys:
-                - regions: Tensor of shape [batch_size, num_rois, 4]. Regions to be used for 
+                - regions: Tensor of shape [batch_size, num_rois, 4]. Regions to be used for
                     postprocessing in absolute coordinates.
                 - pred_scores: Tensor of shape [batch_size, num_rois, num_classes + 1].
                     Output of the classification head representing classification scores.
                 - pred_boxes: Tensor of shape [batch_size, num_rois, num_classes, 4].
-                    Output of the regression head representing encoded predicted box.
+                    Output of the regression head representing encoded predicted boxes.
         """
         pooled_features_flat = self._roi_pooling(feature_maps, rois, True, True)
 
-        pred_class_scores = self._cls_layer(pooled_features_flat)
+        pred_scores = self._cls_layer(pooled_features_flat)
 
         pred_boxes_encoded = self._reg_layer(pooled_features_flat)
         pred_boxes_encoded = self._reg_reshape(pred_boxes_encoded)
 
-        rois = box_utils.to_absolute(rois, self._image_shape)
+        rois = to_absolute(rois, self._image_shape)
 
-        output = {}
-        output["regions"] = rois
-        output["pred_scores"] = pred_class_scores
-        output["pred_boxes"] = pred_boxes_encoded
-        return output
+        return {"regions": rois, "pred_scores": pred_scores, "pred_boxes": pred_boxes_encoded}
 
-    def get_training_samples(self, gt_class_labels, gt_boxes, output):
-        target_class_labels, target_boxes_encoded = tf.map_fn(
-            fn=lambda x: self._target_generator.generate_targets(x[0], x[1], x[2]),
-            elems=(gt_class_labels, gt_boxes, output["regions"]),
+    def get_training_samples(
+        self,
+        gt_labels,
+        gt_boxes,
+        regions,
+        pred_scores,
+        pred_boxes,
+        foreground_iou_interval,
+        background_iou_interval,
+        num_samples,
+        foreground_proportion,
+    ):
+        """
+        Args:
+            - gt_labels: A tensor of shape [batch_size, max_num_objects, num_classes + 1] representing the
+                ground-truth class labels possibly passed with zeros.
+            - gt_boxes: A tensor of shape [batch_size, max_num_objects, 4] representing the
+                ground-truth bounding boxes possibly passed with zeros.
+            - regions: Tensor of shape [batch_size, num_rois, 4], representing the reference regions.
+            - pred_scores: Tensor of shape [batch_size, num_rois, num_classes +1].
+                Output of the classification head, representing classification
+                scores for each RoI.
+            - pred_boxes: Tensor of shape [batch_size, num_rois, num_classes, 4].
+                Output of the regression head, representing encoded predicted boxes.
+            - foreground_iou_interval: Regions that have an IoU overlap with a ground-truth
+                bounding box in this interval are labeled as foreground. Note that if there are no regions
+                within this interval, the region with the highest IoU with any ground truth box will be labeled
+                as foreground to ensure that there is always at least one positive example per image.
+            - background_iou_interval: Regions that have an IoU overlap with a ground-truth
+                bounding box in this interval are labeled as background. Regions that are neither labeled as
+                foreground, nor background are ignored.
+            - num_samples: Number of examples (regions) to sample per image.
+            - foreground_proportion: Maximum proportion of foreground vs background
+                examples to sample per image.
+
+        Returns:
+            Dictionary containing the randomly sampled targets and predictions to be used for computing the loss:
+                - target_labels: Tensor of shape [batch_size, num_samples, num_classes + 1].
+                - pred_scores: Tensor of shape [batch_size, num_samples, num_classes + 1].
+                - target_boxes: Tensor of shape [batch_size, num_samples, num_classes, 4].
+                - pred_boxes: Tensor of shape [batch_size, num_samples, num_classes, 4].
+        """
+        target_labels, target_boxes_encoded = tf.map_fn(
+            fn=lambda x: generate_targets(
+                x[0], x[1], x[2], self._image_shape, foreground_iou_interval, background_iou_interval
+            ),
+            elems=(gt_labels, gt_boxes, regions),
             dtype=(tf.float32, tf.float32),
         )
 
         sample_indices = tf.map_fn(
-            fn=lambda y: sampling_utils.sample_image(y, 64, 0.25), elems=target_class_labels, dtype=tf.int64,
+            fn=lambda l: get_sample_indices(l, num_samples, foreground_proportion), elems=target_labels, dtype=tf.int64,
         )
 
         samples = {}
-        samples["target_labels"] = tf.gather(target_class_labels, sample_indices, batch_dims=1)
-        samples["pred_scores"] = tf.gather(output["pred_scores"], sample_indices, batch_dims=1)
+        samples["target_labels"] = tf.gather(target_labels, sample_indices, batch_dims=1)
+        samples["pred_scores"] = tf.gather(pred_scores, sample_indices, batch_dims=1)
         samples["target_boxes"] = tf.gather(target_boxes_encoded, sample_indices, batch_dims=1)
-        samples["pred_boxes"] = tf.gather(output["pred_boxes"], sample_indices, batch_dims=1)
+        samples["pred_boxes"] = tf.gather(pred_boxes, sample_indices, batch_dims=1)
         return samples
-
-    def postprocess_output(self, output, training):
-        """
-        Postprocess the output of the Faster-RCNN
-
-        Args:
-            - rois: A tensor of shape [num_anchors, 4] representing the Regions of Interest
-                in absolute coordinates.
-            - pred_class_scores: Output of the classification head. A tensor of shape 
-                [batch_size, num_rois, num_classes + 1] representing classification scores 
-                for each Region of Interest.
-            - pred_boxes_encoded: Output of the regression head. A tensor of shape 
-                [batch_size, num_rois, num_classes, 4] representing encoded predicted box 
-                coordinates for each Region of Interest.
-
-        Returns:
-            - boxes: A [batch_size, max_total_size, 4] float32 tensor containing the 
-                predicted bounding boxes.
-            - scores: A [batch_size, max_total_size] float32 tensor containing the 
-                class scores for the boxes.
-            - classes: A [batch_size, max_total_size] float32 tensor containing the 
-                class indices for the boxes.
-
-            With max_total_size = 300.
-        """
-
-        nmsed_boxes, nmsed_scores, nmsed_classes, _ = postprocess_utils.postprocess_output(
-            regions=output["regions"],
-            image_shape=self._image_shape,
-            pred_class_scores=output["pred_scores"],
-            pred_boxes_encoded=output["pred_boxes"],
-            max_output_size_per_class=100,
-            max_total_size=300,
-            iou_threshold=0.6,
-        )
-
-        return nmsed_boxes, nmsed_scores, nmsed_classes
 
 
 class ROIPooling(tf.keras.layers.Layer):
@@ -152,7 +147,7 @@ class ROIPooling(tf.keras.layers.Layer):
             - flatten: Boolean value indicating whether to flatten the roi pooled
                 features, i.e., the last three dimensions of the output tensor.
             - keep_batch_dim: Boolean value indicating whether to keep the batch
-                dimension and the rois dimension separate. If true, the output 
+                dimension and the rois dimension separate. If true, the output
                 tensor will be of shape [batch_size, num_rois, ...] else, it will
                 be of shape [batch_size * num_rois, ...].
         """
