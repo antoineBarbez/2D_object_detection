@@ -1,16 +1,17 @@
-import tensorflow as tf
-import utils.images as image_utils
-import utils.metrics as metric_utils
-
 import argparse
 import datetime
 import json
 import os
 
+import tensorflow as tf
 from PIL import Image
+
 from data.input_pipeline import InputPipelineCreator
 from data.kitti_classes import class_names
 from models.faster_rcnn import FasterRCNN
+from utils.images import draw_predictions_on_image, to_tensor
+from utils.metrics import AveragePrecision, MeanAveragePrecision
+
 
 assert tf.__version__.startswith("2")
 
@@ -83,19 +84,19 @@ def main():
     # Setup metrics
     train_classification_loss = tf.keras.metrics.Mean(name="train_classification_loss")
     train_regression_loss = tf.keras.metrics.Mean(name="train_regression_loss")
-    train_map_50 = metric_utils.MeanAveragePrecision(config["num_classes"], 0.5, name="train_mAP@IoU=.50")
+    train_map_50 = MeanAveragePrecision(config["num_classes"], 0.5, name="train_mAP@IoU=.50")
 
     rpn_train_classification_loss = tf.keras.metrics.Mean(name="rpn_train_classification_loss")
     rpn_train_regression_loss = tf.keras.metrics.Mean(name="rpn_train_regression_loss")
-    rpn_train_ap_50 = metric_utils.AveragePrecision(0.5, name="rpn_train_AP@IoU=.50")
+    rpn_train_ap_50 = AveragePrecision(0.5, name="rpn_train_AP@IoU=.50")
 
     valid_classification_loss = tf.keras.metrics.Mean(name="valid_classification_loss")
     valid_regression_loss = tf.keras.metrics.Mean(name="valid_regression_loss")
-    valid_map_50 = metric_utils.MeanAveragePrecision(config["num_classes"], 0.5, name="valid_mAP@IoU=.50")
+    valid_map_50 = MeanAveragePrecision(config["num_classes"], 0.5, name="valid_mAP@IoU=.50")
 
     rpn_valid_classification_loss = tf.keras.metrics.Mean(name="rpn_valid_classification_loss")
     rpn_valid_regression_loss = tf.keras.metrics.Mean(name="rpn_valid_regression_loss")
-    rpn_valid_ap_50 = metric_utils.AveragePrecision(0.5, name="valid_AP@IoU=.50")
+    rpn_valid_ap_50 = AveragePrecision(0.5, name="valid_AP@IoU=.50")
 
     # Setup tensorboard
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -166,23 +167,23 @@ def main():
                     rpn_valid_ap_50.update_state(gt_boxes, preds["rpn_boxes"], preds["rpn_scores"])
 
                     if test_step == 0:
-                        # Add ground-truth boxes
+                        # Add ground-truth boxes only once
                         if epoch == 1:
                             image_gt_boxes = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-                            image_utils.draw_predictions_on_image(
+                            draw_predictions_on_image(
                                 image_gt_boxes,
                                 gt_boxes[0],
                                 class_indices=tf.math.argmax(gt_classes[0, :, 1:], -1),
                                 class_names=class_names,
                                 relative=True,
                             )
-                            tf.summary.image("Ground-truth", image_utils.to_tensor(image_gt_boxes), step=0)
+                            tf.summary.image("Ground-truth", to_tensor(image_gt_boxes), step=0)
                             image_gt_boxes.close()
 
                         # Add predictions to summary every 5 epochs
                         if epoch % 5 == 0:
                             image_predictions_50 = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-                            image_utils.draw_predictions_on_image(
+                            draw_predictions_on_image(
                                 image_predictions_50,
                                 tf.gather_nd(preds["rcnn_boxes"], tf.where(preds["rcnn_scores"] > 0.5)),
                                 scores=tf.gather_nd(preds["rcnn_scores"], tf.where(preds["rcnn_scores"] > 0.5)),
@@ -190,26 +191,8 @@ def main():
                                 class_names=class_names,
                                 relative=True,
                             )
-                            tf.summary.image(
-                                "Predictions/pred@score=.50", image_utils.to_tensor(image_predictions_50), step=step
-                            )
+                            tf.summary.image("Predictions/pred@score=.50", to_tensor(image_predictions_50), step=step)
                             image_predictions_50.close()
-
-                            image_predictions_75 = Image.fromarray(tf.cast(images[0], dtype=tf.uint8).numpy())
-                            image_utils.draw_predictions_on_image(
-                                image_predictions_75,
-                                tf.gather_nd(preds["rcnn_boxes"], tf.where(preds["rcnn_scores"] > 0.75)),
-                                scores=tf.gather_nd(preds["rcnn_scores"], tf.where(preds["rcnn_scores"] > 0.75)),
-                                class_indices=tf.gather_nd(
-                                    preds["rcnn_classes"], tf.where(preds["rcnn_scores"] > 0.75)
-                                ),
-                                class_names=class_names,
-                                relative=True,
-                            )
-                            tf.summary.image(
-                                "Predictions/pred@score=.75", image_utils.to_tensor(image_predictions_75), step=step
-                            )
-                            image_predictions_75.close()
 
                 tf.summary.scalar(
                     "Losses/Faster-RCNN/classification_loss", valid_classification_loss.result(), step=step

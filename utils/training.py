@@ -77,29 +77,6 @@ def generate_targets(gt_labels, gt_boxes, regions, image_shape, foreground_iou_i
     return target_labels, target_boxes_encoded
 
 
-def _get_labels_masks(max_iou_per_region, max_iou, num_classes, foreground_iou_interval, background_iou_interval):
-    """
-    Get background and forerground masks to be used to generate target labels.
-
-    Returns:
-        background_mask: Boolean tensor of shape [num_regions, num_classes + 1].
-        foreground_mask: Boolean tensor of shape [num_regions, num_classes + 1].
-    """
-    min_f, max_f = foreground_iou_interval
-    min_b, max_b = background_iou_interval
-
-    background_mask = (max_iou_per_region >= min_b) & (max_iou_per_region < max_b)
-    background_mask = tf.tile(tf.expand_dims(background_mask, 1), [1, num_classes + 1])
-
-    max_iou_indice = tf.where(max_iou_per_region == max_iou)[0][0]
-    force_one_foreground_mask = tf.one_hot(max_iou_indice, tf.shape(background_mask)[0], on_value=True, off_value=False)
-    foreground_mask = (max_iou_per_region >= min_f) & (max_iou_per_region < max_f)
-    foreground_mask = foreground_mask | force_one_foreground_mask
-    foreground_mask = tf.tile(tf.expand_dims(foreground_mask, 1), [1, num_classes + 1])
-
-    return background_mask, foreground_mask
-
-
 def get_sample_indices(target_labels, num_samples, foreground_proportion):
     """
     Randomly sample examples to be used for training for a single image.
@@ -141,3 +118,26 @@ def get_sample_indices(target_labels, num_samples, foreground_proportion):
     inds_to_keep = tf.concat([foreground_inds, background_inds], 0)
     inds_to_keep.set_shape([num_samples])
     return inds_to_keep
+
+
+def _get_labels_masks(max_iou_per_region, max_iou, num_classes, foreground_iou_interval, background_iou_interval):
+    """
+    Get background and forerground masks to be used to generate target labels.
+
+    Returns:
+        background_mask: Boolean tensor of shape [num_regions, num_classes + 1].
+        foreground_mask: Boolean tensor of shape [num_regions, num_classes + 1].
+    """
+    min_f, max_f = foreground_iou_interval
+    min_b, max_b = background_iou_interval
+
+    background_mask = (max_iou_per_region >= min_b) & (max_iou_per_region < max_b)
+    background_mask = tf.tile(tf.expand_dims(background_mask, 1), [1, num_classes + 1])
+
+    max_iou_indice = tf.where(max_iou_per_region == max_iou)[0][0]
+    force_one_foreground_mask = tf.one_hot(max_iou_indice, tf.shape(background_mask)[0], on_value=True, off_value=False)
+    foreground_mask = (max_iou_per_region >= min_f) & (max_iou_per_region < max_f)
+    foreground_mask = foreground_mask | force_one_foreground_mask
+    foreground_mask = tf.tile(tf.expand_dims(foreground_mask, 1), [1, num_classes + 1])
+
+    return background_mask, foreground_mask

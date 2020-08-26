@@ -9,7 +9,7 @@ class InputPipelineCreator(object):
         Args:
             - num_classes: Number of classes.
             - image_shape: Shape of the input images. Images that have a different shape
-                in the data will be clipped and/or padded to the desired shape. 
+                in the data will be clipped and/or padded to the desired shape.
             - max_num_objects: Maximum number of object to keep per image.
         """
         self.num_classes = num_classes
@@ -89,7 +89,7 @@ class InputPipelineCreator(object):
 
         Returns:
             - image: The input image.
-            - classes: The class ids of the objects in the image (one hot encoded). 
+            - classes: The class ids of the objects in the image (one hot encoded).
             - bboxes: The bounding boxes coordinates of the objects in the image.
         """
         features = tf.io.parse_single_example(
@@ -110,7 +110,6 @@ class InputPipelineCreator(object):
         image_height_original = tf.cast(features["image/height"], tf.int32)
 
         image = tf.io.decode_image(features["image/encoded"])
-        # image = tf.cast(image, dtype=tf.float32)
         image = tf.reshape(image, [image_height_original, image_width_original, 3])
 
         new_height, new_width, _ = self.image_shape

@@ -43,7 +43,7 @@ class FastRCNNDetector(tf.keras.Model):
     def call(self, feature_maps, rois):
         """
         Args:
-            - feature_maps: Tensor of shape [batch_size, im_height, im_width, channels].
+            - feature_maps: Tensor of shape [batch_size, height, width, channels].
                 Output of the feature extractor.
             - rois: Tensor of shape [batch_size, num_rois, 4] representing the
                 Regions of interest in relative coordinates.

@@ -23,9 +23,9 @@ def postprocess_output(
             - pred_boxes: Tensor of shape [batch_size, num_regions, num_classes, 4].
                 Output of the regression head, representing encoded predicted boxes.
             - score_threshold: A float representing the threshold for deciding when to remove boxes based on score.
-            - iou_threshold: A float representing the threshold for deciding whether boxes overlap 
+            - iou_threshold: A float representing the threshold for deciding whether boxes overlap
                 too much with respect to IOU.
-            - max_output_size_per_class: A scalar integer Tensor representing the maximum number of boxes 
+            - max_output_size_per_class: A scalar integer Tensor representing the maximum number of boxes
                 to be selected by non max suppression per class.
             - max_total_size: A scalar representing maximum number of boxes retained over all classes.
 
@@ -33,7 +33,7 @@ def postprocess_output(
             - nmsed_boxes: A [batch_size, max_total_size, 4] float32 tensor containing the non-max suppressed boxes.
             - nmsed_scores: A [batch_size, max_total_size] float32 tensor containing the scores for the boxes.
             - nmsed_classes: A [batch_size, max_total_size] int32 tensor containing the class indices for the boxes.
-            - num_valid_detections: A [batch_size] int32 tensor indicating the number of valid 
+            - num_valid_detections: A [batch_size] int32 tensor indicating the number of valid
                 detections per batch item. The rest of the entries are zero paddings.
     """
     # Tile regions to be broadcastable with pred_boxes_encoded for decoding

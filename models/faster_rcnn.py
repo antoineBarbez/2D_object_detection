@@ -37,6 +37,16 @@ class FasterRCNN(tf.keras.Model):
         self._regression_loss = RegressionLoss()
 
     def call(self, images, training=False):
+        """
+        Args:
+            - images: Tensor of shape [batch_size, im_height, im_width, channels].
+            - training: Boolean value indicating whether the training version of the
+                computation graph should be constructed.
+
+        Returns:
+            - rpn_output: Output dictionary of the RPN detector.
+            - rcnn_output: Output dictionary of the Fast-RCNN detector.
+        """
         feature_maps = self.feature_extractor(images, training=training)
 
         rpn_output = self.rpn_detector(feature_maps, training=training)
@@ -115,7 +125,6 @@ class FasterRCNN(tf.keras.Model):
                 A tensor of shape [batch_size, num_objects, num_classes + 1].
             - gt_boxes: Ground-truth bounding boxes padded. A tensor of shape 
                 [batch_size, num_objects, 4].
-            - num_samples_per_image: Number of examples (regions) to sample per image.
 
         Returns:
             Test losses and predictions.
